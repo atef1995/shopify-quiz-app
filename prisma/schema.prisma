@@ -1,0 +1,163 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Note that some adapters may set a maximum length for the String type by default, please ensure your strings are long
+// enough when changing adapters.
+// See https://www.prisma.io/docs/orm/reference/prisma-schema-reference#string for more information
+datasource db {
+  provider = "sqlite"
+  url      = "file:dev.sqlite"
+}
+
+model Session {
+  id            String    @id
+  shop          String
+  state         String
+  isOnline      Boolean   @default(false)
+  scope         String?
+  expires       DateTime?
+  accessToken   String
+  userId        BigInt?
+  firstName     String?
+  lastName      String?
+  email         String?
+  accountOwner  Boolean   @default(false)
+  locale        String?
+  collaborator  Boolean?  @default(false)
+  emailVerified Boolean?  @default(false)
+}
+
+// Quiz models for the Product Quiz Builder app
+model Quiz {
+  id          String   @id @default(cuid())
+  shop        String
+  title       String
+  description String?
+  status      String   @default("draft") // draft, active, archived
+
+  // Settings stored as JSON
+  settings    String?  // { emailCapture: true, resultPageTitle: "Your Perfect Products", etc. }
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  questions   Question[]
+  results     QuizResult[]
+  analytics   QuizAnalytics?
+
+  @@index([shop])
+}
+
+model Question {
+  id          String   @id @default(cuid())
+  quizId      String
+  quiz        Quiz     @relation(fields: [quizId], references: [id], onDelete: Cascade)
+
+  text        String
+  type        String   // multiple_choice, image_choice, text_input
+  order       Int
+
+  // Conditional logic stored as JSON
+  // Example: { showIf: { questionId: "xyz", answerContains: "yes" } }
+  conditionalRules String?
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  options     QuestionOption[]
+
+  @@index([quizId])
+}
+
+model QuestionOption {
+  id          String   @id @default(cuid())
+  questionId  String
+  question    Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  text        String
+  imageUrl    String?
+
+  // Product matching logic stored as JSON
+  // Example: { tags: ["skincare", "moisturizer"], collections: ["winter-care"] }
+  productMatching String?
+
+  order       Int
+
+  createdAt   DateTime @default(now())
+
+  @@index([questionId])
+}
+
+model QuizResult {
+  id          String   @id @default(cuid())
+  quizId      String
+  quiz        Quiz     @relation(fields: [quizId], references: [id], onDelete: Cascade)
+
+  // Customer information
+  email       String?
+  customerId  String?
+
+  // Quiz answers stored as JSON
+  // Example: [{ questionId: "xyz", answerId: "abc", answerText: "Yes" }]
+  answers     String
+
+  // Recommended products stored as JSON array of product IDs
+  recommendedProducts String
+
+  // Tracking
+  completedAt DateTime @default(now())
+  convertedAt DateTime? // When customer made a purchase
+  revenue     Float?    @default(0.0)
+
+  @@index([quizId])
+  @@index([email])
+  @@index([completedAt])
+}
+
+model QuizAnalytics {
+  id                String   @id @default(cuid())
+  quizId            String   @unique
+  quiz              Quiz     @relation(fields: [quizId], references: [id], onDelete: Cascade)
+
+  // Metrics
+  totalViews        Int      @default(0)
+  totalCompletions  Int      @default(0)
+  emailCaptureCount Int      @default(0)
+  totalRevenue      Float    @default(0.0)
+
+  // Calculated metrics (completion rate, avg time, etc.) stored as JSON
+  metrics           String?
+
+  // Popular paths/answers stored as JSON
+  // Example: { mostCommonPath: [...], popularAnswers: {...} }
+  insights          String?
+
+  updatedAt         DateTime @updatedAt
+}
+
+// Subscription and billing model
+model Subscription {
+  id              String   @id @default(cuid())
+  shop            String   @unique
+
+  // Subscription tier: free, growth, pro, enterprise
+  tier            String   @default("free")
+
+  // Usage tracking for current billing period
+  currentPeriodCompletions Int @default(0)
+  currentPeriodStart       DateTime @default(now())
+  currentPeriodEnd         DateTime
+
+  // Shopify billing details
+  shopifySubscriptionId    String?
+  status                   String  @default("active") // active, cancelled, expired
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([shop])
+}

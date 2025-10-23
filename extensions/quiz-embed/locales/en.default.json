@@ -1,0 +1,30 @@
+{
+  "loading": {
+    "text": "Loading quiz..."
+  },
+  "progress": {
+    "question_text": "Question",
+    "of_text": "of"
+  },
+  "navigation": {
+    "back_button": "Back",
+    "next_button": "Next",
+    "see_results_button": "See Results"
+  },
+  "email_capture": {
+    "heading": "Almost there! 🎉",
+    "description": "Enter your email to see your personalized product recommendations.",
+    "email_placeholder": "your@email.com",
+    "submit_button": "Show My Results",
+    "disclaimer": "We'll never spam you. Unsubscribe anytime."
+  },
+  "results": {
+    "heading": "Your Perfect Products",
+    "description": "Based on your answers, we recommend:",
+    "view_product_button": "View Product",
+    "retake_button": "Retake Quiz"
+  },
+  "error": {
+    "message": "Sorry, we couldn't load the quiz. Please try again later."
+  }
+}

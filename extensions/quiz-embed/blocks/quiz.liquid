@@ -1,0 +1,116 @@
+{% comment %}
+  Product Quiz Block
+
+  This block renders an interactive product recommendation quiz
+  on the storefront. Customers answer questions and receive
+  personalized product recommendations.
+{% endcomment %}
+
+{{ 'quiz-embed.css' | asset_url | stylesheet_tag }}
+
+<div class="quiz-container" id="quiz-{{ block.id }}" data-quiz-id="{{ block.settings.quiz_id }}">
+  <div class="quiz-wrapper">
+    <!-- Loading State -->
+    <div class="quiz-loading" id="quiz-loading">
+      <div class="spinner"></div>
+      <p>{{ 'loading.text' | t }}</p>
+    </div>
+
+    <!-- Quiz Content (populated by JavaScript) -->
+    <div class="quiz-content" id="quiz-content" style="display: none;">
+      <!-- Header -->
+      <div class="quiz-header">
+        <h2 class="quiz-title"></h2>
+        <p class="quiz-description"></p>
+        <div class="quiz-progress">
+          <div class="quiz-progress-bar">
+            <div class="quiz-progress-fill" style="width: 0%"></div>
+          </div>
+          <p class="quiz-progress-text">{{ 'progress.question_text' | t }} <span class="current-question">1</span> {{ 'progress.of_text' | t }} <span class="total-questions">5</span></p>
+        </div>
+      </div>
+
+      <!-- Question -->
+      <div class="quiz-question">
+        <h3 class="question-text"></h3>
+        <div class="quiz-options">
+          <!-- Options populated by JS -->
+        </div>
+      </div>
+
+      <!-- Navigation -->
+      <div class="quiz-navigation">
+        <button class="quiz-btn quiz-btn-secondary quiz-btn-back" style="display: none;">
+          {{ 'navigation.back_button' | t }}
+        </button>
+        <button
+          class="quiz-btn quiz-btn-primary quiz-btn-next"
+          disabled
+          data-next-text="{{ 'navigation.next_button' | t }}"
+          data-results-text="{{ 'navigation.see_results_button' | t }}"
+        >
+          {{ 'navigation.next_button' | t }}
+        </button>
+      </div>
+    </div>
+
+    <!-- Email Capture -->
+    <div class="quiz-email-capture" id="quiz-email-capture" style="display: none;">
+      <div class="email-capture-content">
+        <h2>{{ 'email_capture.heading' | t }}</h2>
+        <p>{{ 'email_capture.description' | t }}</p>
+        <form class="email-capture-form" id="email-capture-form">
+          <input
+            type="email"
+            name="email"
+            placeholder="{{ 'email_capture.email_placeholder' | t }}"
+            required
+            class="email-input"
+          />
+          <button type="submit" class="quiz-btn quiz-btn-primary">
+            {{ 'email_capture.submit_button' | t }}
+          </button>
+        </form>
+        <p class="email-disclaimer">{{ 'email_capture.disclaimer' | t }}</p>
+      </div>
+    </div>
+
+    <!-- Results -->
+    <div class="quiz-results" id="quiz-results" style="display: none;">
+      <div class="results-header">
+        <h2>{{ 'results.heading' | t }}</h2>
+        <p>{{ 'results.description' | t }}</p>
+      </div>
+      <div class="results-products" id="results-products">
+        <!-- Products populated by JS -->
+      </div>
+      <div class="results-footer">
+        <button class="quiz-btn quiz-btn-secondary" onclick="location.reload()">
+          {{ 'results.retake_button' | t }}
+        </button>
+      </div>
+    </div>
+
+    <!-- Error State -->
+    <div class="quiz-error" id="quiz-error" style="display: none;">
+      <p>{{ 'error.message' | t }}</p>
+    </div>
+  </div>
+</div>
+
+<script src="{{ 'quiz-embed.js' | asset_url }}" defer></script>
+
+{% schema %}
+{
+  "name": "Product Quiz",
+  "target": "section",
+  "settings": [
+    {
+      "type": "text",
+      "id": "quiz_id",
+      "label": "Quiz ID",
+      "info": "Enter the Quiz ID from your app dashboard"
+    }
+  ]
+}
+{% endschema %}

@@ -1,0 +1,10 @@
+name = "quiz-embed"
+
+uid = "93a73919-37e2-0dfe-58ce-eb995a6f3269e5bb289e"
+
+type = "theme_app_extension"
+handle = "quiz-embed"
+
+[build]
+command = ""
+path = ""
