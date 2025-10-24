@@ -8,7 +8,23 @@
 
 {{ 'quiz-embed.css' | asset_url | stylesheet_tag }}
 
-<div class="quiz-container" id="quiz-{{ block.id }}" data-quiz-id="{{ block.settings.quiz_id }}">
+{% comment %}Display Quiz ID helper if in theme editor{% endcomment %}
+{% if block.settings.quiz_id == blank %}
+  <div class="quiz-setup-notice" style="padding: 20px; background: #FFF4E6; border: 2px dashed #FF6B00; border-radius: 8px; margin: 20px 0;">
+    <h3 style="margin: 0 0 10px 0; color: #FF6B00;">⚠️ Quiz Setup Required</h3>
+    <p style="margin: 0 0 10px 0;">Please enter a Quiz ID in the block settings (sidebar) to display your quiz.</p>
+    <p style="margin: 0; font-size: 14px; color: #666;">
+      <strong>How to find your Quiz ID:</strong><br>
+      1. Go to your Shopify Apps → Product Quiz app<br>
+      2. Click on "Quizzes" in the sidebar<br>
+      3. Click on the quiz you want to display<br>
+      4. Look at the URL - it will be like: <code>/app/quizzes/<strong>YOUR_QUIZ_ID</strong>/edit</code><br>
+      5. Copy the Quiz ID and paste it in the block settings
+    </p>
+  </div>
+{% endif %}
+
+<div class="quiz-container" id="quiz-{{ block.id }}" data-quiz-id="{{ block.settings.quiz_id }}" {% if block.settings.quiz_id == blank %}style="display: none;"{% endif %}>
   <div class="quiz-wrapper">
     <!-- Loading State -->
     <div class="quiz-loading" id="quiz-loading">
@@ -109,7 +125,11 @@
       "type": "text",
       "id": "quiz_id",
       "label": "Quiz ID",
-      "info": "Enter the Quiz ID from your app dashboard"
+      "info": "Copy the Quiz ID from your app admin panel. Go to the app → Quizzes → Click on a quiz → Copy the ID from the URL (the part after /quizzes/)"
+    },
+    {
+      "type": "paragraph",
+      "content": "💡 Tip: To find your Quiz ID, go to your Shopify app admin, click on a quiz to edit it, and copy the ID from the browser URL."
     }
   ]
 }

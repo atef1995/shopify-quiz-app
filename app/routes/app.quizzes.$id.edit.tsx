@@ -63,7 +63,14 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
         text: o.text,
         imageUrl: o.imageUrl,
         productMatching: o.productMatching
-          ? JSON.parse(o.productMatching)
+          ? (() => {
+              try {
+                return JSON.parse(o.productMatching);
+              } catch (error) {
+                console.error("Error parsing productMatching in loader:", error, "Data:", o.productMatching);
+                return null;
+              }
+            })()
           : null,
         order: o.order,
       })),
@@ -245,7 +252,11 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       data: { status },
     });
 
-    return { success: true, message: `Quiz ${status}` };
+    const message = status === "active" 
+      ? "Quiz activated! It's now live on your storefront." 
+      : "Quiz set to draft. It's no longer visible to customers.";
+
+    return { success: true, message };
   }
 
   if (action === "generateAI") {
@@ -354,11 +365,18 @@ export default function EditQuiz() {
   const [showAllTypes, setShowAllTypes] = useState<{ [key: string]: boolean }>(
     {},
   );
+  const [currentStatus, setCurrentStatus] = useState(quiz.status);
 
   // Show toast on action completion
   useEffect(() => {
     if (fetcher.data?.success) {
       shopify.toast.show(fetcher.data.message);
+      // Sync status with server response
+      if (fetcher.data.message?.includes("activated")) {
+        setCurrentStatus("active");
+      } else if (fetcher.data.message?.includes("draft")) {
+        setCurrentStatus("draft");
+      }
     } else if (fetcher.data?.success === false) {
       shopify.toast.show(fetcher.data.message, { isError: true });
     }
@@ -568,13 +586,6 @@ export default function EditQuiz() {
     <s-page
       heading={quiz.title}
       backAction={{ onAction: () => navigate("/app/quizzes") }}
-      secondaryActions={[
-        {
-          content: quiz.status === "active" ? "Deactivate" : "Activate",
-          onAction: () =>
-            handleStatusChange(quiz.status === "active" ? "draft" : "active"),
-        },
-      ]}
     >
       <s-button
         slot="primary-action"
@@ -583,6 +594,43 @@ export default function EditQuiz() {
       >
         Save Changes
       </s-button>
+
+      {/* Quiz Status Banner */}
+      <s-banner>
+        <s-stack direction="inline" gap="base" align="space-between">
+          <s-stack direction="inline" gap="base" align="center">
+            <s-text>
+              <strong>Quiz Status:</strong>
+            </s-text>
+            <s-badge
+              variant={currentStatus === "active" ? "success" : "warning"}
+            >
+              {currentStatus === "active" ? "🟢 Active" : "🟡 Draft"}
+            </s-badge>
+            {currentStatus === "active" && (
+              <s-text color="subdued">
+                This quiz is live and visible to customers on your storefront
+              </s-text>
+            )}
+            {currentStatus === "draft" && (
+              <s-text color="subdued">
+                This quiz is not visible to customers. Activate it to make it live.
+              </s-text>
+            )}
+          </s-stack>
+          <s-button
+            variant={currentStatus === "active" ? "secondary" : "primary"}
+            onClick={() => {
+              const newStatus = currentStatus === "active" ? "draft" : "active";
+              setCurrentStatus(newStatus); // Optimistic update
+              handleStatusChange(newStatus);
+            }}
+            disabled={fetcher.state !== "idle"}
+          >
+            {fetcher.state !== "idle" ? "Updating..." : currentStatus === "active" ? "Set to Draft" : "Activate Quiz"}
+          </s-button>
+        </s-stack>
+      </s-banner>
 
       {/* Quiz Basic Info */}
       <s-section heading="Quiz Details">
@@ -607,6 +655,46 @@ export default function EditQuiz() {
       {/* Questions Section */}
       <s-section heading="Questions">
         <s-stack direction="block" gap="base">
+          {questions.length > 0 && (
+            <>
+              {(() => {
+                // Check if any options are missing product matching data
+                const optionsWithoutMatching = questions.flatMap(q => 
+                  q.options.filter(o => {
+                    if (!o.productMatching) return true;
+                    try {
+                      const matching = typeof o.productMatching === 'string' 
+                        ? JSON.parse(o.productMatching) 
+                        : o.productMatching;
+                      return (!matching.tags || matching.tags.length === 0) && 
+                             (!matching.types || matching.types.length === 0);
+                    } catch {
+                      return true;
+                    }
+                  })
+                );
+                
+                if (optionsWithoutMatching.length > 0) {
+                  return (
+                    <s-banner variant="warning">
+                      <s-stack direction="block" gap="tight">
+                        <s-text>
+                          ⚠️ {optionsWithoutMatching.length} option(s) don&apos;t have product matching configured!
+                        </s-text>
+                        <s-text variant="body-sm">
+                          To get personalized product recommendations, add <strong>Tags</strong> and <strong>Product Types</strong> 
+                          to your quiz options. These should match the tags and types of your Shopify products.
+                        </s-text>
+                        <s-text variant="body-sm">
+                          Example: For &quot;Casual Style&quot; option, add tags like &quot;casual, comfortable&quot; and types like &quot;t-shirt, hoodie&quot;
+                        </s-text>
+                      </s-stack>
+                    </s-banner>
+                  );
+                }
+              })()}
+            </>
+          )}
           {questions.length === 0 ? (
             <s-banner variant="info">
               No questions yet. Add your first question below or use AI to
@@ -674,24 +762,28 @@ export default function EditQuiz() {
                                       Matches:{" "}
                                       {(() => {
                                         try {
-                                          const matching = JSON.parse(
-                                            option.productMatching,
-                                          );
+                                          // Handle both string and object cases
+                                          const matching = typeof option.productMatching === 'string' 
+                                            ? JSON.parse(option.productMatching)
+                                            : option.productMatching;
+                                          
                                           const parts = [];
-                                          if (matching.tags?.length)
+                                          if (matching?.tags?.length)
                                             parts.push(
                                               `Tags: ${matching.tags.join(", ")}`,
                                             );
-                                          if (matching.types?.length)
+                                          if (matching?.types?.length)
                                             parts.push(
                                               `Types: ${matching.types.join(", ")}`,
                                             );
+                                            
                                           return (
                                             parts.join(" | ") ||
                                             "No matching rules"
                                           );
-                                        } catch {
-                                          return "Invalid matching data";
+                                        } catch (error) {
+                                          console.error("Error parsing productMatching:", error, "Data:", option.productMatching);
+                                          return `Invalid matching data: ${typeof option.productMatching}`;
                                         }
                                       })()}
                                     </s-text>

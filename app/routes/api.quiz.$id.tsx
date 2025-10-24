@@ -24,10 +24,10 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
     }
 
     // Fetch quiz with questions and options
+    // NOTE: This is a public API endpoint - no shop filtering for storefront access
     const quiz = await prisma.quiz.findUnique({
       where: {
         id: quizId,
-        status: "active", // Only return active quizzes
       },
       include: {
         questions: {
@@ -41,30 +41,47 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
       },
     });
 
+    console.log('Quiz fetch attempt:', { quizId, found: !!quiz, status: quiz?.status });
+
     if (!quiz) {
+      console.error('Quiz not found in database:', quizId);
       return Response.json(
-        { error: "Quiz not found or not active" },
+        { error: `Quiz not found with ID: ${quizId}` },
         { status: 404 }
       );
     }
 
-    // Track quiz view
-    // TODO: Move analytics tracking to background job to improve response time
-    // TODO: Add IP address tracking to prevent view count inflation
-    // BUG: If analytics update fails, it throws error and quiz doesn't load
-    //      Wrap in try-catch and log error instead of failing the request
-    await prisma.quizAnalytics.update({
-      where: { quizId: quiz.id },
-      data: {
-        totalViews: {
-          increment: 1,
-        },
-      },
-    });
+    if (quiz.status !== "active") {
+      console.error('Quiz exists but not active:', { quizId, status: quiz.status });
+      return Response.json(
+        { error: `Quiz exists but status is "${quiz.status}". Please activate it in the admin.` },
+        { status: 404 }
+      );
+    }
 
-    // Parse settings
-    // BUG: JSON.parse can throw if settings is malformed - wrap in try-catch
-    const settings = quiz.settings ? JSON.parse(quiz.settings) : {};
+    // Track quiz view (non-blocking)
+    try {
+      await prisma.quizAnalytics.update({
+        where: { quizId: quiz.id },
+        data: {
+          totalViews: {
+            increment: 1,
+          },
+        },
+      });
+    } catch (analyticsError) {
+      console.warn("Failed to update analytics for quiz", quiz.id, analyticsError);
+      // Don't fail the request if analytics fails
+    }
+
+    // Parse settings safely
+    let settings = {};
+    try {
+      settings = quiz.settings ? JSON.parse(quiz.settings) : {};
+    } catch (settingsError) {
+      console.warn("Failed to parse quiz settings for quiz", quiz.id, settingsError);
+      settings = {};
+    }
 
     // Format response
     // TODO: Don't expose internal productMatching data to frontend
@@ -74,21 +91,28 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
       title: quiz.title,
       description: quiz.description,
       settings,
-      questions: quiz.questions.map((q) => ({
-        id: q.id,
-        text: q.text,
-        type: q.type,
-        // BUG: JSON.parse can throw - wrap in try-catch
-        conditionalRules: q.conditionalRules
-          ? JSON.parse(q.conditionalRules)
-          : null,
-        options: q.options.map((o) => ({
-          id: o.id,
-          text: o.text,
-          imageUrl: o.imageUrl,
-          // Note: productMatching is intentionally not included for security
-        })),
-      })),
+      questions: quiz.questions.map((q) => {
+        // Parse conditional rules safely
+        let conditionalRules = null;
+        try {
+          conditionalRules = q.conditionalRules ? JSON.parse(q.conditionalRules) : null;
+        } catch (rulesError) {
+          console.warn("Failed to parse conditional rules for question", q.id, rulesError);
+        }
+
+        return {
+          id: q.id,
+          text: q.text,
+          type: q.type,
+          conditionalRules,
+          options: q.options.map((o) => ({
+            id: o.id,
+            text: o.text,
+            imageUrl: o.imageUrl,
+            // Note: productMatching is intentionally not included for security
+          })),
+        };
+      }),
     };
 
     return Response.json(response, {
@@ -99,7 +123,7 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
         // TODO: Add ETag for conditional requests
       },
     });
-  } catch (error: any) {
+  } catch (error) {
     // TODO: Add error logging service integration
     // TODO: Track error rates per quiz for monitoring
     console.error("Error fetching quiz:", error);

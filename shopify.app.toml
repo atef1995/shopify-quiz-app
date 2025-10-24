@@ -26,3 +26,10 @@ scopes = "write_products,read_products,read_customers,write_customers"
 
 [auth]
 redirect_urls = [ "https://example.com/api/auth" ]
+
+[app_proxy]
+# App proxy routes storefront requests to app
+# Storefront: /apps/quiz-app/* → App: https://your-app.com/*
+url = "https://example.com"
+subpath = "quiz-app"
+prefix = "apps"

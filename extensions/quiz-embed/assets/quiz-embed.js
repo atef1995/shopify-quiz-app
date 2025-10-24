@@ -13,7 +13,7 @@
  * BUG: Currently using hardcoded quiz data instead of fetching from API
  */
 
-(function() {
+(function () {
   'use strict';
 
   // Quiz state
@@ -24,13 +24,19 @@
 
   // DOM elements
   const container = document.querySelector('.quiz-container');
-  if (!container) return;
+  if (!container) {
+    console.error('Quiz container not found. Make sure the quiz block is properly added to your theme.');
+    return;
+  }
 
   const quizId = container.dataset.quizId;
+  console.log('Container found:', container);
+  console.log('Quiz ID from data attribute:', quizId);
+  console.log('Container dataset:', container.dataset);
 
-  // TODO: Get API base URL from app configuration or environment
-  // For now, construct it from current location
-  const API_BASE_URL = window.location.origin;
+  // Use Shopify App Proxy path for API calls from storefront
+  // Requests to /apps/quiz-app/api/* are proxied to the app
+  const API_BASE_URL = window.location.origin + '/apps/quiz-app';
   const loadingEl = document.getElementById('quiz-loading');
   const contentEl = document.getElementById('quiz-content');
   const emailCaptureEl = document.getElementById('quiz-email-capture');
@@ -39,22 +45,20 @@
 
   /**
    * Initialize quiz - fetch quiz data and render first question
-   *
-   * TODO: Replace simulated data with real API call to /api/quiz/:id
-   * TODO: Add retry logic if API call fails (3 retries with exponential backoff)
-   * TODO: Show specific error messages based on error type (404, 500, network error)
-   * BUG: No loading timeout - if API never responds, spinner shows forever
    */
   async function initQuiz() {
     try {
+      console.log('Initializing quiz with ID:', quizId);
+
       // Fetch real quiz data from API
       if (!quizId) {
-        throw new Error('Quiz ID is missing');
+        throw new Error('Quiz ID is missing from block settings');
       }
 
       // TODO: Get actual app URL from Shopify app proxy or configuration
       // For now, attempt to fetch from current domain
       const apiUrl = `${API_BASE_URL}/api/quiz/${quizId}`;
+      console.log('Fetching quiz from:', apiUrl);
 
       const response = await fetch(apiUrl, {
         method: 'GET',
@@ -63,63 +67,27 @@
         },
       });
 
+      console.log('API Response status:', response.status);
+
       if (!response.ok) {
+        const errorText = await response.text();
+        console.error('API Error response:', errorText);
+
         if (response.status === 404) {
-          throw new Error('Quiz not found or not active');
+          throw new Error('Quiz not found or not active. Check that your quiz exists and is set to "active" status.');
         }
-        throw new Error(`Failed to load quiz: ${response.status}`);
+        throw new Error(`Failed to load quiz (${response.status}): ${errorText}`);
       }
 
       quizData = await response.json();
+      console.log('Quiz data loaded:', quizData);
 
-      // Fallback: If API call fails, use simulated data for testing
-      // TODO: Remove this fallback once API is properly configured
-      if (!quizData || !quizData.questions) {
-        console.warn('Using fallback quiz data');
-        quizData = {
-        id: quizId,
-        title: 'Find Your Perfect Products',
-        description: 'Answer a few questions to discover products tailored to your needs',
-        questions: [
-          {
-            id: '1',
-            text: 'What are you looking for?',
-            type: 'multiple_choice',
-            options: [
-              { id: 'o1', text: 'Something for everyday use' },
-              { id: 'o2', text: 'A special occasion item' },
-              { id: 'o3', text: 'A gift for someone' },
-              { id: 'o4', text: 'Something to treat myself' },
-            ]
-          },
-          {
-            id: '2',
-            text: "What's your budget?",
-            type: 'multiple_choice',
-            options: [
-              { id: 'o5', text: 'Under $50' },
-              { id: 'o6', text: '$50 - $100' },
-              { id: 'o7', text: '$100 - $200' },
-              { id: 'o8', text: 'Over $200' },
-            ]
-          },
-          {
-            id: '3',
-            text: 'What style appeals to you?',
-            type: 'multiple_choice',
-            options: [
-              { id: 'o9', text: 'Modern & Minimal' },
-              { id: 'o10', text: 'Classic & Timeless' },
-              { id: 'o11', text: 'Bold & Trendy' },
-              { id: 'o12', text: 'Natural & Organic' },
-            ]
-          }
-        ],
-        settings: {
-          emailCapture: true,
-          resultPageTitle: 'Your Perfect Products'
-        }
+      // Validate quiz data
+      if (!quizData || !quizData.questions || quizData.questions.length === 0) {
+        throw new Error('Quiz data is empty or invalid. Make sure your quiz has questions.');
       }
+
+      console.log(`Quiz loaded successfully with ${quizData.questions.length} questions`);
 
       loadingEl.style.display = 'none';
       contentEl.style.display = 'block';
@@ -131,6 +99,13 @@
     } catch (error) {
       console.error('Failed to load quiz:', error);
       loadingEl.style.display = 'none';
+
+      // Show detailed error message
+      const errorMessageEl = errorEl.querySelector('p');
+      if (errorMessageEl) {
+        errorMessageEl.textContent = `Error loading quiz: ${error.message}`;
+      }
+
       showError();
     }
   }
@@ -381,18 +356,107 @@
     recommendedProducts.forEach(product => {
       const productEl = document.createElement('div');
       productEl.className = 'result-product';
+      
+      // Extract numeric variant ID from GraphQL ID (format: gid://shopify/ProductVariant/12345)
+      const variantId = product.variantId ? product.variantId.split('/').pop() : null;
+      
       productEl.innerHTML = `
         <img src="${product.imageUrl || product.image}" alt="${product.title}" />
         <div class="result-product-info">
           <div class="result-product-title">${product.title}</div>
           <div class="result-product-price">${product.price}</div>
-          <button class="result-product-btn" onclick="window.location.href='${product.url}'">
-            View Product
-          </button>
+          ${variantId ? 
+            `<button class="result-product-btn" data-variant-id="${variantId}" data-product-title="${product.title}">
+              Add to Cart
+            </button>` :
+            `<button class="result-product-btn" onclick="window.location.href='${product.url}'">
+              View Product
+            </button>`
+          }
         </div>
       `;
+      
+      // Add click handler for Add to Cart button
+      if (variantId) {
+        const btn = productEl.querySelector('.result-product-btn');
+        btn.addEventListener('click', () => addToCart(variantId, product.title));
+      }
+      
       productsContainer.appendChild(productEl);
     });
+  }
+
+  /**
+   * Add product to cart using Shopify Ajax API
+   * 
+   * @param {string} variantId - The variant ID to add to cart
+   * @param {string} productTitle - Product title for user feedback
+   */
+  async function addToCart(variantId, productTitle) {
+    // Find the button that was clicked
+    const button = event.target;
+    const originalText = button.textContent;
+    
+    try {
+      // Disable button and show loading state
+      button.disabled = true;
+      button.textContent = 'Adding...';
+      
+      const response = await fetch('/cart/add.js', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          items: [{
+            id: variantId,
+            quantity: 1
+          }]
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to add to cart: ${response.status}`);
+      }
+
+      // Show success state
+      button.textContent = '✓ Added!';
+      button.style.background = '#10b981';
+      
+      // Optional: Update cart count in header if it exists
+      try {
+        const cartResponse = await fetch('/cart.js');
+        const cartData = await cartResponse.json();
+        const cartCount = document.querySelector('.cart-count, [data-cart-count]');
+        if (cartCount) {
+          cartCount.textContent = cartData.item_count;
+        }
+      } catch (e) {
+        // Cart count update failed - not critical
+        console.log('Could not update cart count');
+      }
+      
+      // Reset button after 2 seconds
+      setTimeout(() => {
+        button.textContent = originalText;
+        button.style.background = '';
+        button.disabled = false;
+      }, 2000);
+      
+    } catch (error) {
+      console.error('Error adding to cart:', error);
+      
+      // Show error state
+      button.textContent = '✗ Error';
+      button.style.background = '#ef4444';
+      
+      // Reset button after 2 seconds
+      setTimeout(() => {
+        button.textContent = originalText;
+        button.style.background = '';
+        button.disabled = false;
+      }, 2000);
+    }
   }
 
   /**

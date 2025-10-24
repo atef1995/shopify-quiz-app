@@ -1,7 +1,7 @@
 import type { ActionFunctionArgs } from "react-router";
 import prisma from "../db.server";
 import { canCreateCompletion, incrementCompletionCount } from "../lib/billing.server";
-import { authenticate } from "../shopify.server";
+import { unauthenticated } from "../shopify.server";
 
 /**
  * Public API endpoint to submit quiz results from storefront
@@ -71,7 +71,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
 
     // Generate product recommendations based on answers
-    const recommendedProducts = await generateRecommendations(quiz, answers, request);
+    const recommendedProducts = await generateRecommendations(quiz, answers, quiz.shop);
 
     // Save quiz result
     // TODO: Add customer IP address tracking for fraud detection
@@ -137,41 +137,72 @@ export const action = async ({ request }: ActionFunctionArgs) => {
  *
  * @param quiz - The quiz object with questions and options
  * @param answers - Array of user answers
- * @returns Array of recommended product IDs
+ * @param shop - Shop domain for unauthenticated API access
+ * @returns Array of recommended products with details
  *
- * TODO: CRITICAL - Implement real product recommendations using Shopify GraphQL API
+ * NOTE: Uses unauthenticated.admin() because this is called from PUBLIC storefront API
+ *       Cannot use authenticate.admin(request) as there's no admin session from storefront
  * TODO: Add price range filtering based on budget question answers
  * TODO: Add inventory checking - don't recommend out-of-stock products
  * TODO: Add product ranking/scoring algorithm (match strength, popularity, margin)
- * TODO: Implement fallback logic if no products match (show popular/featured products)
- * TODO: Cache product data to reduce GraphQL API calls
+ * TODO: Cache product data to reduce GraphQL API calls (Redis/in-memory)
  * TODO: Add A/B testing for different recommendation algorithms
  */
-async function generateRecommendations(quiz: any, answers: any[], request: Request) {
+async function generateRecommendations(quiz: any, answers: any[], shop: string) {
   // Collect all matching tags and types from selected options
   const matchingTags = new Set<string>();
   const matchingTypes = new Set<string>();
   let maxPrice: number | null = null;
   let minPrice: number | null = null;
 
+  console.log("=== RECOMMENDATION DEBUG ===");
+  console.log("Quiz:", quiz.title);
+  console.log("Total answers:", answers.length);
+
   answers.forEach((answer) => {
     // Find the selected option
     const question = quiz.questions.find((q: any) => q.id === answer.questionId);
-    if (!question) return;
+    if (!question) {
+      console.log("Question not found for answer:", answer);
+      return;
+    }
 
     const option = question.options.find((o: any) => o.id === answer.optionId);
-    if (!option || !option.productMatching) return;
-
-    // BUG: JSON.parse could throw error if productMatching is malformed
-    // Wrap in try-catch to prevent entire recommendation engine from crashing
-    const productMatching = JSON.parse(option.productMatching);
-
-    // Add tags and types to our sets
-    if (productMatching.tags) {
-      productMatching.tags.forEach((tag: string) => matchingTags.add(tag));
+    if (!option) {
+      console.log("Option not found:", answer.optionId);
+      return;
     }
-    if (productMatching.types) {
-      productMatching.types.forEach((type: string) => matchingTypes.add(type));
+    
+    console.log("Processing option:", option.text, "productMatching:", option.productMatching);
+    
+    if (!option.productMatching) {
+      console.log("⚠️ No productMatching data for option:", option.text);
+      return;
+    }
+
+    // Parse productMatching safely - wrapped in try-catch to prevent crashes
+    try {
+      const productMatching = JSON.parse(option.productMatching);
+      console.log("Parsed productMatching:", productMatching);
+
+      // Add tags and types to our sets
+      if (productMatching.tags) {
+        productMatching.tags.forEach((tag: string) => matchingTags.add(tag));
+        console.log("Added tags:", productMatching.tags);
+      }
+      if (productMatching.types) {
+        productMatching.types.forEach((type: string) => matchingTypes.add(type));
+        console.log("Added types:", productMatching.types);
+      }
+    } catch (error) {
+      console.error(
+        "❌ Error parsing productMatching for option:",
+        option.id,
+        "Data:",
+        option.productMatching,
+        error
+      );
+      // Skip this option and continue with others
     }
 
     // TODO: Extract price range from budget question answers
@@ -179,10 +210,14 @@ async function generateRecommendations(quiz: any, answers: any[], request: Reque
     // This requires identifying which question is the budget question
   });
 
+  console.log("Final matchingTags:", Array.from(matchingTags));
+  console.log("Final matchingTypes:", Array.from(matchingTypes));
+
   // Query Shopify for products matching the collected criteria
   try {
-    // Get authenticated admin client
-    const { admin } = await authenticate.admin(request);
+    // FIXME: Use unauthenticated.admin() with offline session token for public API
+    // This is a PUBLIC endpoint called from storefront, not an authenticated admin session
+    const { admin } = await unauthenticated.admin(shop);
 
     // Build search query
     const queryParts: string[] = [];
@@ -229,7 +264,14 @@ async function generateRecommendations(quiz: any, answers: any[], request: Reque
                     currencyCode
                   }
                 }
-                availableForSale
+                status
+                variants(first: 1) {
+                  edges {
+                    node {
+                      id
+                    }
+                  }
+                }
               }
             }
           }
@@ -242,6 +284,8 @@ async function generateRecommendations(quiz: any, answers: any[], request: Reque
 
     const productsData = await productsResponse.json();
 
+    console.log("GraphQL Response:", JSON.stringify(productsData, null, 2));
+
     // Check for GraphQL errors
     if (productsData.errors) {
       console.error("GraphQL errors:", productsData.errors);
@@ -251,16 +295,21 @@ async function generateRecommendations(quiz: any, answers: any[], request: Reque
     const products =
       productsData.data?.products?.edges?.map((edge: any) => edge.node) || [];
 
-    // Filter out unavailable products
+    console.log("Total products found:", products.length);
+
+    // Filter to only active products (ACTIVE status means available for sale)
     const availableProducts = products.filter(
-      (product: any) => product.availableForSale
+      (product: any) => product.status === 'ACTIVE'
     );
+
+    console.log("Available products:", availableProducts.length);
 
     // If we have matching products, return them
     if (availableProducts.length > 0) {
-      // Return top 3-6 products
+      // Return top 3-6 products with variant ID for cart functionality
       return availableProducts.slice(0, 6).map((product: any) => ({
         id: product.id,
+        variantId: product.variants?.edges?.[0]?.node?.id || null,
         title: product.title,
         handle: product.handle,
         price: `${product.priceRangeV2.minVariantPrice.currencyCode} ${parseFloat(
@@ -292,7 +341,14 @@ async function generateRecommendations(quiz: any, answers: any[], request: Reque
                     currencyCode
                   }
                 }
-                availableForSale
+                status
+                variants(first: 1) {
+                  edges {
+                    node {
+                      id
+                    }
+                  }
+                }
               }
             }
           }
@@ -304,11 +360,12 @@ async function generateRecommendations(quiz: any, answers: any[], request: Reque
     const fallbackProducts =
       fallbackData.data?.products?.edges
         ?.map((edge: any) => edge.node)
-        .filter((product: any) => product.availableForSale) || [];
+        .filter((product: any) => product.status === 'ACTIVE') || [];
 
     if (fallbackProducts.length > 0) {
       return fallbackProducts.map((product: any) => ({
         id: product.id,
+        variantId: product.variants?.edges?.[0]?.node?.id || null,
         title: product.title,
         handle: product.handle,
         price: `${product.priceRangeV2.minVariantPrice.currencyCode} ${parseFloat(
