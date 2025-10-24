@@ -173,6 +173,54 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 /**
+ * Extract price range from option text
+ * Supports formats like:
+ * - "Under $50" -> { max: 50 }
+ * - "$50-$100" -> { min: 50, max: 100 }
+ * - "Over $200" -> { min: 200 }
+ * - "Less than $75" -> { max: 75 }
+ * - "$100+" -> { min: 100 }
+ * 
+ * @param text - Option text to parse
+ * @returns Object with min/max price or null if no price found
+ */
+function extractPriceRange(text: string): { min?: number; max?: number } | null {
+  // Remove currency symbols and normalize
+  const normalized = text.toLowerCase().trim();
+  
+  // Pattern: "Under $50", "Under 50", "< $50", "Less than $50"
+  const underMatch = normalized.match(/(?:under|less than|below|<)\s*\$?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)/);
+  if (underMatch) {
+    const max = parseFloat(underMatch[1].replace(/,/g, ''));
+    return { max };
+  }
+  
+  // Pattern: "Over $200", "Above $200", "> $200", "$200+"
+  const overMatch = normalized.match(/(?:over|above|more than|>)\s*\$?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)/);
+  if (overMatch) {
+    const min = parseFloat(overMatch[1].replace(/,/g, ''));
+    return { min };
+  }
+  
+  // Pattern: "$50+" or "50+"
+  const plusMatch = normalized.match(/\$?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)\s*\+/);
+  if (plusMatch) {
+    const min = parseFloat(plusMatch[1].replace(/,/g, ''));
+    return { min };
+  }
+  
+  // Pattern: "$50-$100", "$50 - $100", "50-100"
+  const rangeMatch = normalized.match(/\$?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)\s*[-–—]\s*\$?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)/);
+  if (rangeMatch) {
+    const min = parseFloat(rangeMatch[1].replace(/,/g, ''));
+    const max = parseFloat(rangeMatch[2].replace(/,/g, ''));
+    return { min, max };
+  }
+  
+  return null;
+}
+
+/**
  * Generate product recommendations based on quiz answers
  *
  * This analyzes the user's answers and matches them against
@@ -185,7 +233,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
  *
  * NOTE: Uses unauthenticated.admin() because this is called from PUBLIC storefront API
  *       Cannot use authenticate.admin(request) as there's no admin session from storefront
- * TODO: Add price range filtering based on budget question answers
  * TODO: Add inventory checking - don't recommend out-of-stock products
  * TODO: Add product ranking/scoring algorithm (match strength, popularity, margin)
  * TODO: Cache product data to reduce GraphQL API calls (Redis/in-memory)
@@ -218,6 +265,22 @@ async function generateRecommendations(quiz: any, answers: any[], shop: string) 
     
     console.log("Processing option:", option.text, "productMatching:", option.productMatching);
     
+    // Check if this is a budget/price question
+    const isBudgetQuestion = /budget|price|spend|cost|afford|willing to pay/i.test(question.text);
+    if (isBudgetQuestion) {
+      console.log("💰 Detected budget question:", question.text);
+      const priceRange = extractPriceRange(option.text);
+      if (priceRange) {
+        if (priceRange.min !== undefined) {
+          minPrice = priceRange.min;
+        }
+        if (priceRange.max !== undefined) {
+          maxPrice = priceRange.max;
+        }
+        console.log(`💵 Extracted price range from "${option.text}":`, { minPrice, maxPrice });
+      }
+    }
+    
     if (!option.productMatching) {
       console.log("⚠️ No productMatching data for option:", option.text);
       return;
@@ -247,14 +310,11 @@ async function generateRecommendations(quiz: any, answers: any[], shop: string) 
       );
       // Skip this option and continue with others
     }
-
-    // TODO: Extract price range from budget question answers
-    // Example: if answer.optionText === "Under $50", set maxPrice = 50
-    // This requires identifying which question is the budget question
   });
 
   console.log("Final matchingTags:", Array.from(matchingTags));
   console.log("Final matchingTypes:", Array.from(matchingTypes));
+  console.log("Final price filter:", { minPrice, maxPrice });
 
   // Query Shopify for products matching the collected criteria
   try {
@@ -282,10 +342,20 @@ async function generateRecommendations(quiz: any, answers: any[], shop: string) 
     }
 
     // Add price filtering if available
-    // TODO: Extract price from budget question answer
-    // For now, we'll fetch products without price filter
+    // Shopify search query syntax: variants.price:>=50 variants.price:<=100
+    if (minPrice !== null && maxPrice !== null) {
+      queryParts.push(`variants.price:>=${minPrice} variants.price:<=${maxPrice}`);
+      console.log(`💰 Adding price filter: $${minPrice}-$${maxPrice}`);
+    } else if (minPrice !== null) {
+      queryParts.push(`variants.price:>=${minPrice}`);
+      console.log(`💰 Adding min price filter: $${minPrice}+`);
+    } else if (maxPrice !== null) {
+      queryParts.push(`variants.price:<=${maxPrice}`);
+      console.log(`💰 Adding max price filter: up to $${maxPrice}`);
+    }
 
     const searchQuery = queryParts.length > 0 ? queryParts.join(" AND ") : "*";
+    console.log("🔍 Final search query:", searchQuery);
 
     // Query products from Shopify
     const productsResponse = await admin.graphql(
@@ -341,11 +411,34 @@ async function generateRecommendations(quiz: any, answers: any[], shop: string) 
     console.log("Total products found:", products.length);
 
     // Filter to only active products (ACTIVE status means available for sale)
-    const availableProducts = products.filter(
+    let availableProducts = products.filter(
       (product: any) => product.status === 'ACTIVE'
     );
 
     console.log("Available products:", availableProducts.length);
+    
+    // Apply client-side price filtering as additional safety layer
+    // This ensures accurate filtering even if Shopify search query doesn't work perfectly
+    if (minPrice !== null || maxPrice !== null) {
+      availableProducts = availableProducts.filter((product: any) => {
+        const price = parseFloat(product.priceRangeV2.minVariantPrice.amount);
+        
+        if (minPrice !== null && price < minPrice) {
+          console.log(`❌ Filtered out ${product.title} - price $${price} below min $${minPrice}`);
+          return false;
+        }
+        
+        if (maxPrice !== null && price > maxPrice) {
+          console.log(`❌ Filtered out ${product.title} - price $${price} above max $${maxPrice}`);
+          return false;
+        }
+        
+        console.log(`✅ ${product.title} - price $${price} within range`);
+        return true;
+      });
+      
+      console.log("Products after price filtering:", availableProducts.length);
+    }
 
     // If we have matching products, return them
     if (availableProducts.length > 0) {
