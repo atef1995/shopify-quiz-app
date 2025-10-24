@@ -49,19 +49,41 @@ npm install -g @shopify/cli@latest
 
 ### Setup
 
+Using this template? Follow these steps to set up your app:
+
+1. **Clone and install dependencies:**
 ```shell
 shopify app init --template=https://github.com/Shopify/shopify-app-template-react-router
+cd your-app-name
+npm install
 ```
 
-### Database Setup
+2. **Configure environment variables:**
+```shell
+cp .env.example .env
+```
 
-Run Prisma migrations to set up the database:
+Edit `.env` and add your configuration:
+```env
+# Required for AI quiz generation (optional - app works without it)
+OPENAI_API_KEY=sk-your-openai-api-key-here
 
+# Optional: Choose AI model (defaults to gpt-4o-mini for cost efficiency)
+OPENAI_MODEL=gpt-4o-mini
+```
+
+**Getting an OpenAI API key:**
+- Sign up at [platform.openai.com](https://platform.openai.com)
+- Go to API Keys section and create a new key
+- Cost: ~$0.01-0.03 per quiz generation with gpt-4o-mini
+- Without a key, the app falls back to rule-based question generation
+
+3. **Run database migrations:**
 ```shell
 npm run setup
 ```
 
-This will create the necessary database tables for quizzes, analytics, and billing.
+This creates the necessary database tables for quizzes, analytics, and billing.
 
 ### Local Development
 
