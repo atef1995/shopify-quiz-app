@@ -64,29 +64,32 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       // If AI generation is requested, generate questions automatically
       if (useAI) {
         try {
-          await authenticate.admin(request);
+          // Build absolute URL for API call - extract origin from request
+          const requestUrl = new URL(request.url);
+          const apiUrl = `${requestUrl.origin}/api/quiz/generate`;
           
-          const generateResponse = await fetch(
-            `${process.env.SHOPIFY_APP_URL || request.url.split('/app')[0]}/api/quiz/generate`,
-            {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/x-www-form-urlencoded",
-              },
-              body: new URLSearchParams({
-                quizId: quiz.id,
-                style: "professional",
-              }),
-            }
-          );
+          const generateResponse = await fetch(apiUrl, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/x-www-form-urlencoded",
+            },
+            body: new URLSearchParams({
+              quizId: quiz.id,
+              style: "professional",
+            }),
+          });
 
-          const result = await generateResponse.json();
-          
-          if (!result.success) {
-            console.warn("AI generation failed:", result.error);
-            // Continue to edit page even if AI generation fails
+          if (!generateResponse.ok) {
+            const errorText = await generateResponse.text();
+            console.warn("AI generation API error:", generateResponse.status, errorText);
           } else {
-            console.log("AI generation successful:", result);
+            const result = await generateResponse.json();
+            
+            if (!result.success) {
+              console.warn("AI generation failed:", result.error);
+            } else {
+              console.log("AI generation successful:", result);
+            }
           }
         } catch (error) {
           console.warn("AI generation error:", error);

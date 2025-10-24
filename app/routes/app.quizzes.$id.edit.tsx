@@ -82,7 +82,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
  * Action handler for updating quiz and questions
  */
 export const action = async ({ request, params }: ActionFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
   const quizId = params.id;
   const formData = await request.formData();
   const action = formData.get("action");
@@ -260,34 +260,101 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   }
 
   if (action === "generateAI") {
-    // Call the AI generation API
+    // Generate quiz questions directly (no need for separate API call)
     try {
-      const generateFormData = new FormData();
-      generateFormData.append("quizId", quizId);
-      generateFormData.append("style", "professional");
-
-      const generateResponse = await fetch(
-        `${process.env.SHOPIFY_APP_URL}/api/quiz/generate`,
+      // Fetch products from Shopify
+      const productsResponse = await admin.graphql(
+        `#graphql
+          query getProducts($first: Int!) {
+            products(first: $first) {
+              edges {
+                node {
+                  id
+                  title
+                  description
+                  productType
+                  tags
+                  vendor
+                  variants(first: 1) {
+                    edges {
+                      node {
+                        price
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        `,
         {
-          method: "POST",
-          body: generateFormData,
-        },
+          variables: { first: 50 },
+        }
       );
 
-      const result = await generateResponse.json();
+      const productsData = await productsResponse.json();
+      const products = productsData.data?.products?.edges?.map((edge: any) => edge.node) || [];
 
-      if (result.success) {
-        return {
-          success: true,
-          message: `Successfully generated ${result.questionsCount} questions!`,
-        };
-      } else {
+      if (products.length === 0) {
         return {
           success: false,
-          message: result.error || "Failed to generate questions",
+          message: "No products found. Please add products to your store first.",
         };
       }
+
+      // Extract unique tags and types
+      const productTags = new Set<string>();
+      const productTypes = new Set<string>();
+
+      products.forEach((product: any) => {
+        product.tags?.forEach((tag: string) => productTags.add(tag));
+        if (product.productType) productTypes.add(product.productType);
+      });
+
+      // Generate questions using rule-based approach (AI integration can be added later)
+      const questions = generateBasicQuestions(
+        products,
+        Array.from(productTags),
+        Array.from(productTypes)
+      );
+
+      // Save generated questions to database
+      for (let i = 0; i < questions.length; i++) {
+        const questionData = questions[i];
+
+        const createdQuestion = await prisma.question.create({
+          data: {
+            quizId,
+            text: questionData.text,
+            type: questionData.type || "multiple_choice",
+            order: i + 1,
+          },
+        });
+
+        // Create options for the question
+        for (let j = 0; j < questionData.options.length; j++) {
+          const option = questionData.options[j];
+
+          await prisma.questionOption.create({
+            data: {
+              questionId: createdQuestion.id,
+              text: option.text,
+              order: j + 1,
+              productMatching: JSON.stringify({
+                tags: option.matchingTags || [],
+                types: option.matchingTypes || [],
+              }),
+            },
+          });
+        }
+      }
+
+      return {
+        success: true,
+        message: `Successfully generated ${questions.length} questions!`,
+      };
     } catch (error) {
+      console.error("Generate AI error:", error);
       const errorMessage =
         error instanceof Error ? error.message : "Failed to generate questions";
       return {
@@ -1240,6 +1307,97 @@ export default function EditQuiz() {
       </s-section>
     </s-page>
   );
+}
+
+/**
+ * Generate basic quiz questions from product catalog
+ * This is a simplified version that creates questions based on product attributes
+ */
+function generateBasicQuestions(
+  products: any[],
+  tags: string[],
+  types: string[]
+) {
+  const questions: any[] = [];
+
+  // Question 1: Purpose/Use Case
+  questions.push({
+    text: "What are you looking for?",
+    type: "multiple_choice",
+    options: [
+      { text: "Something for everyday use", matchingTags: ["daily", "essential", "basic"], matchingTypes: [] },
+      { text: "A special occasion item", matchingTags: ["luxury", "premium", "special"], matchingTypes: [] },
+      { text: "A gift for someone", matchingTags: ["gift", "present"], matchingTypes: [] },
+      { text: "Something to treat myself", matchingTags: ["indulgent", "premium", "luxury"], matchingTypes: [] },
+    ],
+  });
+
+  // Question 2: Budget (if products have varying prices)
+  const prices = products
+    .map(p => parseFloat(p.variants?.edges?.[0]?.node?.price || 0))
+    .filter(p => p > 0);
+
+  if (prices.length > 0) {
+    const avgPrice = prices.reduce((a, b) => a + b, 0) / prices.length;
+
+    questions.push({
+      text: "What's your budget?",
+      type: "multiple_choice",
+      options: [
+        { text: `Under $${Math.round(avgPrice * 0.5)}`, matchingTags: ["budget", "affordable"], matchingTypes: [] },
+        { text: `$${Math.round(avgPrice * 0.5)} - $${Math.round(avgPrice)}`, matchingTags: [], matchingTypes: [] },
+        { text: `$${Math.round(avgPrice)} - $${Math.round(avgPrice * 1.5)}`, matchingTags: ["premium"], matchingTypes: [] },
+        { text: `Over $${Math.round(avgPrice * 1.5)}`, matchingTags: ["luxury", "premium", "high-end"], matchingTypes: [] },
+      ],
+    });
+  }
+
+  // Question 3: Product Type (if multiple types exist)
+  if (types.length > 1) {
+    const typeOptions = types.slice(0, 4).map(type => ({
+      text: type,
+      matchingTags: [],
+      matchingTypes: [type],
+    }));
+
+    questions.push({
+      text: "Which category interests you most?",
+      type: "multiple_choice",
+      options: typeOptions,
+    });
+  }
+
+  // Question 4: Style/Preference (based on common tags)
+  const styleKeywords = ["modern", "classic", "vintage", "minimal", "bold", "natural", "organic"];
+  const availableStyles = tags.filter(tag =>
+    styleKeywords.some(keyword => tag.toLowerCase().includes(keyword))
+  );
+
+  if (availableStyles.length >= 2) {
+    questions.push({
+      text: "What style appeals to you?",
+      type: "multiple_choice",
+      options: availableStyles.slice(0, 4).map(styleTag => ({
+        text: styleTag.charAt(0).toUpperCase() + styleTag.slice(1),
+        matchingTags: [styleTag],
+        matchingTypes: [],
+      })),
+    });
+  }
+
+  // Question 5: Features/Benefits
+  questions.push({
+    text: "What's most important to you?",
+    type: "multiple_choice",
+    options: [
+      { text: "Quality and durability", matchingTags: ["durable", "quality", "premium"], matchingTypes: [] },
+      { text: "Eco-friendly and sustainable", matchingTags: ["eco", "sustainable", "organic", "natural"], matchingTypes: [] },
+      { text: "Latest trends and styles", matchingTags: ["trending", "new", "modern"], matchingTypes: [] },
+      { text: "Best value for money", matchingTags: ["value", "affordable", "budget"], matchingTypes: [] },
+    ],
+  });
+
+  return questions.slice(0, 7); // Return max 7 questions
 }
 
 export const headers: HeadersFunction = (headersArgs) => {
