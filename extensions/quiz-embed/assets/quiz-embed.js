@@ -356,32 +356,34 @@
     recommendedProducts.forEach(product => {
       const productEl = document.createElement('div');
       productEl.className = 'result-product';
-      
+
       // Extract numeric variant ID from GraphQL ID (format: gid://shopify/ProductVariant/12345)
       const variantId = product.variantId ? product.variantId.split('/').pop() : null;
-      
+
+      console.log('Product:', product.title, 'Variant ID:', variantId, 'Full variantId:', product.variantId);
+
       productEl.innerHTML = `
         <img src="${product.imageUrl || product.image}" alt="${product.title}" />
         <div class="result-product-info">
           <div class="result-product-title">${product.title}</div>
           <div class="result-product-price">${product.price}</div>
-          ${variantId ? 
-            `<button class="result-product-btn" data-variant-id="${variantId}" data-product-title="${product.title}">
+          ${variantId ?
+          `<button class="result-product-btn" data-variant-id="${variantId}" data-product-title="${product.title}">
               Add to Cart
             </button>` :
-            `<button class="result-product-btn" onclick="window.location.href='${product.url}'">
+          `<button class="result-product-btn" onclick="window.location.href='${product.url}'">
               View Product
             </button>`
-          }
+        }
         </div>
       `;
-      
+
       // Add click handler for Add to Cart button
       if (variantId) {
         const btn = productEl.querySelector('.result-product-btn');
         btn.addEventListener('click', () => addToCart(variantId, product.title));
       }
-      
+
       productsContainer.appendChild(productEl);
     });
   }
@@ -396,12 +398,22 @@
     // Find the button that was clicked
     const button = event.target;
     const originalText = button.textContent;
-    
+
+    console.log('Add to cart called with variantId:', variantId);
+
     try {
       // Disable button and show loading state
       button.disabled = true;
       button.textContent = 'Adding...';
-      
+
+      // Ensure variantId is numeric (Shopify Ajax API requires numeric ID)
+      const numericId = parseInt(variantId, 10);
+      if (isNaN(numericId)) {
+        throw new Error(`Invalid variant ID: ${variantId}`);
+      }
+
+      console.log('Adding variant to cart:', numericId);
+
       const response = await fetch('/cart/add.js', {
         method: 'POST',
         headers: {
@@ -409,47 +421,83 @@
         },
         body: JSON.stringify({
           items: [{
-            id: variantId,
+            id: numericId,
             quantity: 1
           }]
         })
       });
 
+      console.log('Cart add response:', response.status, response.statusText);
+
       if (!response.ok) {
+        const errorText = await response.text();
+        console.error('Cart add failed:', errorText);
         throw new Error(`Failed to add to cart: ${response.status}`);
       }
+
+      const result = await response.json();
+      console.log('Cart add successful:', result);
 
       // Show success state
       button.textContent = '✓ Added!';
       button.style.background = '#10b981';
-      
-      // Optional: Update cart count in header if it exists
+
+      // Update cart count in header
       try {
         const cartResponse = await fetch('/cart.js');
         const cartData = await cartResponse.json();
-        const cartCount = document.querySelector('.cart-count, [data-cart-count]');
-        if (cartCount) {
-          cartCount.textContent = cartData.item_count;
-        }
+
+        // Try multiple selectors for cart count
+        const countSelectors = [
+          '.cart-count',
+          '[data-cart-count]',
+          '#cart-count',
+          '.cart__count',
+          '[data-header-cart-count]',
+          'cart-count-bubble',
+        ];
+
+        let cartUpdated = false;
+        countSelectors.forEach(selector => {
+          const countEl = document.querySelector(selector);
+          if (countEl) {
+            countEl.textContent = cartData.item_count;
+            countEl.style.display = cartData.item_count > 0 ? '' : 'none';
+            cartUpdated = true;
+          }
+        });
+
+        // Trigger cart refresh events
+        document.dispatchEvent(new CustomEvent('cart:refresh'));
+        window.dispatchEvent(new CustomEvent('theme:cart:change', {
+          detail: { cart: cartData }
+        }));
+
+        // Show notification toast
+        showCartNotification(productTitle, cartData.item_count);
+
+        console.log('Cart updated:', cartUpdated, 'Items:', cartData.item_count);
+
       } catch (e) {
-        // Cart count update failed - not critical
-        console.log('Could not update cart count');
+        console.log('Could not update cart:', e);
+        // Still show notification even if count update fails
+        showCartNotification(productTitle, null);
       }
-      
+
       // Reset button after 2 seconds
       setTimeout(() => {
         button.textContent = originalText;
         button.style.background = '';
         button.disabled = false;
       }, 2000);
-      
+
     } catch (error) {
       console.error('Error adding to cart:', error);
-      
+
       // Show error state
       button.textContent = '✗ Error';
       button.style.background = '#ef4444';
-      
+
       // Reset button after 2 seconds
       setTimeout(() => {
         button.textContent = originalText;
@@ -457,6 +505,41 @@
         button.disabled = false;
       }, 2000);
     }
+  }
+
+  /**
+   * Show cart notification toast
+   * 
+   * @param {string} productTitle - Product that was added
+   * @param {number|null} itemCount - Total items in cart
+   */
+  function showCartNotification(productTitle, itemCount) {
+    // Create notification element
+    const notification = document.createElement('div');
+    notification.className = 'quiz-cart-notification';
+    notification.innerHTML = `
+      <div class="quiz-cart-notification-content">
+        <svg width="20" height="20" fill="currentColor" viewBox="0 0 20 20" style="flex-shrink: 0;">
+          <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/>
+        </svg>
+        <div>
+          <strong>${productTitle}</strong> added to cart
+          ${itemCount ? `<div style="font-size: 0.875rem; opacity: 0.9;">${itemCount} item${itemCount > 1 ? 's' : ''} in cart</div>` : ''}
+        </div>
+      </div>
+      <a href="/cart" class="quiz-cart-notification-link">View Cart →</a>
+    `;
+
+    document.body.appendChild(notification);
+
+    // Animate in
+    setTimeout(() => notification.classList.add('show'), 10);
+
+    // Remove after 5 seconds
+    setTimeout(() => {
+      notification.classList.remove('show');
+      setTimeout(() => notification.remove(), 300);
+    }, 5000);
   }
 
   /**
