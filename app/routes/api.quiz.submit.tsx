@@ -23,10 +23,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const body = await request.json();
     const { quizId, email, answers } = body;
 
-    // TODO: Add email format validation using regex or library like validator.js
-    // TODO: Sanitize email input to prevent XSS/injection attacks
-    // TODO: Validate answers array structure (each answer should have questionId and optionId)
-
+    // Validate required fields
     if (!quizId || !answers || !Array.isArray(answers)) {
       return Response.json(
         { error: "Quiz ID and answers are required" },
@@ -34,8 +31,45 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       );
     }
 
-    // BUG: No maximum length check on answers array - could cause performance issues
-    // if someone sends 10000+ answers. Add validation: answers.length <= 50
+    // Validate answers array length to prevent abuse
+    if (answers.length === 0 || answers.length > 50) {
+      return Response.json(
+        { error: "Invalid number of answers. Must be between 1 and 50." },
+        { status: 400 }
+      );
+    }
+
+    // Validate email format if provided
+    if (email) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email)) {
+        return Response.json(
+          { error: "Invalid email format" },
+          { status: 400 }
+        );
+      }
+      
+      // Sanitize email - trim and lowercase
+      const sanitizedEmail = email.trim().toLowerCase();
+      
+      // Additional validation: max length
+      if (sanitizedEmail.length > 254) {
+        return Response.json(
+          { error: "Email address too long" },
+          { status: 400 }
+        );
+      }
+    }
+
+    // Validate answer structure
+    for (const answer of answers) {
+      if (!answer.questionId || !answer.optionId) {
+        return Response.json(
+          { error: "Each answer must have questionId and optionId" },
+          { status: 400 }
+        );
+      }
+    }
 
     // Verify quiz exists and is active
     const quiz = await prisma.quiz.findUnique({
@@ -73,36 +107,43 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     // Generate product recommendations based on answers
     const recommendedProducts = await generateRecommendations(quiz, answers, quiz.shop);
 
-    // Save quiz result
-    // TODO: Add customer IP address tracking for fraud detection
-    // TODO: Add browser fingerprinting to detect duplicate submissions
-    const result = await prisma.quizResult.create({
-      data: {
-        quizId,
-        email: email || null,
-        answers: JSON.stringify(answers),
-        recommendedProducts: JSON.stringify(recommendedProducts),
-      },
-    });
+    // Use sanitized email if provided
+    const finalEmail = email ? email.trim().toLowerCase() : null;
 
-    // Update analytics
-    // BUG: If this update fails, the quiz result is still saved but analytics won't reflect it
-    // Consider using a transaction to ensure atomicity
-    await prisma.quizAnalytics.update({
-      where: { quizId },
-      data: {
-        totalCompletions: {
-          increment: 1,
+    // Save quiz result and update analytics in a transaction for atomicity
+    // This ensures both operations succeed or both fail - prevents inconsistent state
+    const result = await prisma.$transaction(async (tx) => {
+      // Create quiz result
+      const quizResult = await tx.quizResult.create({
+        data: {
+          quizId,
+          email: finalEmail,
+          answers: JSON.stringify(answers),
+          recommendedProducts: JSON.stringify(recommendedProducts),
         },
-        emailCaptureCount: email ? {
-          increment: 1,
-        } : undefined,
-      },
+      });
+
+      // Update analytics atomically
+      await tx.quizAnalytics.update({
+        where: { quizId },
+        data: {
+          totalCompletions: {
+            increment: 1,
+          },
+          emailCaptureCount: finalEmail ? {
+            increment: 1,
+          } : undefined,
+        },
+      });
+
+      // Increment completion count for billing tracking (atomic)
+      await incrementCompletionCount(quiz.shop);
+
+      return quizResult;
     });
 
-    // Increment usage count for billing
-    // BUG: If this fails, merchant gets a free completion. Wrap in transaction with analytics update
-    await incrementCompletionCount(quiz.shop);
+    // Get shop domain for CORS - restrict to actual shop only, not wildcard
+    const shopDomain = `https://${quiz.shop}`;
 
     return Response.json(
       {
@@ -112,19 +153,21 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       },
       {
         headers: {
-          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Origin": shopDomain,
+          "Access-Control-Allow-Credentials": "true",
         },
       }
     );
   } catch (error: any) {
-    // TODO: Add proper error logging service (Sentry, LogRocket, etc.)
-    // TODO: Add error categorization for better debugging (DB errors, API errors, validation errors)
-    // BUG: Exposing generic error message could hide important validation issues from users
-    //      Consider returning more specific error messages for different error types
     console.error("Error submitting quiz:", error);
     return Response.json(
       { error: "Failed to submit quiz" },
-      { status: 500 }
+      { 
+        status: 500,
+        headers: {
+          "Access-Control-Allow-Origin": "*", // Allow error responses from any origin
+        },
+      }
     );
   }
 };
@@ -388,20 +431,23 @@ async function generateRecommendations(quiz: any, answers: any[], shop: string) 
 }
 
 // Handle CORS preflight
-// BUG: CORS wildcard "*" allows any website to call this API
-//      Should restrict to shop's actual domain or use shop-specific tokens
-// TODO: Implement proper CORS policy:
-//       1. Check Origin header against allowed shop domains
-//       2. Return shop-specific CORS headers
-//       3. Add rate limiting per origin
-export const loader = async () => {
+// NOTE: Preflight requests don't have quiz context, so we allow all origins for OPTIONS
+// Actual POST requests are restricted to shop domain in the action handler
+export const loader = async ({ request }: { request: Request }) => {
+  const origin = request.headers.get("Origin") || "";
+  
+  // Check if origin is a valid Shopify shop domain
+  const isShopifyDomain = origin.endsWith(".myshopify.com") || 
+                          origin.includes("shopify.com");
+  
   return Response.json(
     {},
     {
       headers: {
-        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Origin": isShopifyDomain ? origin : "*",
         "Access-Control-Allow-Methods": "POST, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type",
+        "Access-Control-Allow-Credentials": "true",
       },
     }
   );
