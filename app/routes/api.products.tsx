@@ -33,8 +33,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
                 productType
                 tags
                 vendor
-                availableForSale
                 totalInventory
+                status
                 featuredImage {
                   url
                   altText
@@ -54,7 +54,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
                     node {
                       id
                       price
-                      availableForSale
                     }
                   }
                 }
@@ -88,7 +87,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       productType: edge.node.productType,
       tags: edge.node.tags,
       vendor: edge.node.vendor,
-      availableForSale: edge.node.availableForSale,
+      status: edge.node.status,
       totalInventory: edge.node.totalInventory,
       imageUrl: edge.node.featuredImage?.url,
       imageAlt: edge.node.featuredImage?.altText,

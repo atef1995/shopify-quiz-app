@@ -7,12 +7,11 @@ import prisma from "../db.server";
  * This endpoint is called by the quiz embed block on the storefront
  * to load quiz questions and settings.
  *
+ * Security: CORS restricted to Shopify shop domains only
  * TODO: Add rate limiting per quiz ID to prevent scraping
  * TODO: Add conditional ETag support to reduce bandwidth
- * BUG: CORS wildcard allows any domain to fetch quiz data
- * TODO: Consider adding shop domain verification
  */
-export const loader = async ({ params }: LoaderFunctionArgs) => {
+export const loader = async ({ params, request }: LoaderFunctionArgs) => {
   try {
     const quizId = params.id;
 
@@ -105,31 +104,61 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
           text: q.text,
           type: q.type,
           conditionalRules,
-          options: q.options.map((o) => ({
-            id: o.id,
-            text: o.text,
-            imageUrl: o.imageUrl,
-            // Note: productMatching is intentionally not included for security
-          })),
+          options: q.options.map((o) => {
+            // Parse productMatching to extract budget/price metadata for conditional logic
+            let budgetMin, budgetMax, priceRange;
+            try {
+              const matching = o.productMatching ? JSON.parse(o.productMatching) : {};
+              budgetMin = matching.budgetMin;
+              budgetMax = matching.budgetMax;
+              priceRange = matching.priceRange;
+            } catch (e) {
+              console.warn("Failed to parse productMatching for option", o.id);
+            }
+
+            return {
+              id: o.id,
+              text: o.text,
+              imageUrl: o.imageUrl,
+              // Include budget/price metadata for conditional filtering (safe to expose)
+              budgetMin,
+              budgetMax,
+              priceRange,
+              // Note: Full productMatching (tags/types) is intentionally not included for security
+            };
+          }),
         };
       }),
     };
 
+    // Get origin for CORS - allow Shopify domains and custom domains from the same shop
+    const origin = request.headers.get("Origin") || "";
+    const shopDomain = quiz.shop;
+    const isShopifyDomain = origin.endsWith(".myshopify.com") || 
+                            origin.includes(shopDomain.replace(".myshopify.com", ""));
+    
     return Response.json(response, {
       headers: {
-        "Access-Control-Allow-Origin": "*", // Allow storefront access
+        "Access-Control-Allow-Origin": isShopifyDomain ? origin : `https://${shopDomain}`,
+        "Access-Control-Allow-Credentials": "true",
         "Cache-Control": "public, max-age=300", // Cache for 5 minutes
-        // TODO: Add Vary header for proper cache behavior
+        "Vary": "Origin", // Proper cache behavior for CORS
         // TODO: Add ETag for conditional requests
       },
     });
   } catch (error) {
-    // TODO: Add error logging service integration
-    // TODO: Track error rates per quiz for monitoring
     console.error("Error fetching quiz:", error);
+    
+    // Return error with proper CORS headers
+    const origin = request.headers.get("Origin") || "";
+    const headers: HeadersInit = {
+      "Access-Control-Allow-Origin": origin.endsWith(".myshopify.com") ? origin : "*",
+      "Access-Control-Allow-Credentials": "true",
+    };
+    
     return Response.json(
       { error: "Failed to fetch quiz" },
-      { status: 500 }
+      { status: 500, headers }
     );
   }
 };

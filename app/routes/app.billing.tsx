@@ -1,8 +1,10 @@
 import type { LoaderFunctionArgs, HeadersFunction } from "react-router";
-import { useLoaderData, useNavigate } from "react-router";
+import { useLoaderData, useNavigate, useFetcher } from "react-router";
 import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
-import { getUsageStats, TIER_LIMITS } from "../lib/billing.server";
+import { getUsageStats, TIER_LIMITS, type SubscriptionTier } from "../lib/billing.server";
+import { useEffect } from "react";
+import { useAppBridge } from "@shopify/app-bridge-react";
 
 /**
  * Loader to fetch billing and usage information
@@ -72,9 +74,34 @@ function getTierFeatures(tier: keyof typeof TIER_LIMITS) {
 
 export default function Billing() {
   const { usage, tiers } = useLoaderData<typeof loader>();
+  const fetcher = useFetcher();
+  const shopify = useAppBridge();
 
   const isNearLimit = usage.percentUsed >= 80;
   const isOverLimit = usage.percentUsed >= 100;
+
+  // Show toast on billing status return
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const status = url.searchParams.get("status");
+    
+    if (status === "success") {
+      shopify.toast.show("Subscription updated successfully!");
+      // Clean URL
+      window.history.replaceState({}, "", "/app/billing");
+    } else if (status === "error") {
+      shopify.toast.show("Failed to update subscription", { isError: true });
+      window.history.replaceState({}, "", "/app/billing");
+    }
+  }, [shopify]);
+
+  const handleUpgrade = (tier: string) => {
+    // Use fetcher to submit to billing upgrade route
+    fetcher.submit(
+      { tier },
+      { method: "post", action: "/app/billing/upgrade" }
+    );
+  };
 
   return (
     <s-page heading="Billing & Usage">
@@ -228,9 +255,20 @@ export default function Billing() {
                     ))}
                   </s-stack>
 
-                  {!tier.isCurrent && (
+                  {!tier.isCurrent && tier.key !== "free" && (
+                    <s-button 
+                      variant="primary" 
+                      fullWidth
+                      onClick={() => handleUpgrade(tier.key)}
+                      loading={fetcher.state === "submitting"}
+                    >
+                      Upgrade to {tier.name}
+                    </s-button>
+                  )}
+                  
+                  {tier.isCurrent && (
                     <s-button variant="primary" fullWidth disabled>
-                      Upgrade (Coming Soon)
+                      Current Plan
                     </s-button>
                   )}
                 </s-stack>

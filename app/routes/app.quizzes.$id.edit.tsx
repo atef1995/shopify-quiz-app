@@ -9,6 +9,14 @@ import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import prisma from "../db.server";
+import OpenAI from "openai";
+
+// Initialize OpenAI client
+const openai = process.env.OPENAI_API_KEY
+  ? new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY,
+    })
+  : null;
 
 /**
  * Loader to fetch quiz details and questions for editing
@@ -157,6 +165,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     const imageUrl = formData.get("imageUrl") as string;
     const productTags = formData.get("productTags") as string;
     const productTypes = formData.get("productTypes") as string;
+    const productIds = formData.get("productIds") as string;
 
     if (!optionText.trim()) {
       return { success: false, message: "Option text is required" };
@@ -179,6 +188,12 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
         ? productTypes
             .split(",")
             .map((type) => type.trim())
+            .filter(Boolean)
+        : [],
+      productIds: productIds
+        ? productIds
+            .split(",")
+            .map((id) => id.trim())
             .filter(Boolean)
         : [],
     });
@@ -260,8 +275,17 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   }
 
   if (action === "generateAI") {
-    // Generate quiz questions directly (no need for separate API call)
+    // Generate quiz questions with AI or fallback to rule-based
     try {
+      // Get quiz details for context
+      const quiz = await prisma.quiz.findUnique({
+        where: { id: quizId, shop: session.shop },
+      });
+
+      if (!quiz) {
+        return { success: false, message: "Quiz not found" };
+      }
+
       // Fetch products from Shopify
       const productsResponse = await admin.graphql(
         `#graphql
@@ -311,12 +335,38 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
         if (product.productType) productTypes.add(product.productType);
       });
 
-      // Generate questions using rule-based approach (AI integration can be added later)
-      const questions = generateBasicQuestions(
-        products,
-        Array.from(productTags),
-        Array.from(productTypes)
-      );
+      // Try AI generation first, fall back to rule-based if unavailable
+      let questions;
+      let generationMethod = "rule-based";
+
+      if (openai) {
+        console.log("🤖 Generating questions with OpenAI GPT-4o-mini...");
+        try {
+          questions = await generateQuestionsWithAI(
+            products,
+            Array.from(productTags),
+            Array.from(productTypes),
+            "professional",
+            quiz.title
+          );
+          generationMethod = "AI";
+          console.log(`✅ AI generated ${questions.length} questions`);
+        } catch (aiError: any) {
+          console.error("❌ AI generation failed, falling back to rule-based:", aiError.message);
+          questions = generateBasicQuestions(
+            products,
+            Array.from(productTags),
+            Array.from(productTypes)
+          );
+        }
+      } else {
+        console.log("⚠️ OpenAI API key not configured, using rule-based generation");
+        questions = generateBasicQuestions(
+          products,
+          Array.from(productTags),
+          Array.from(productTypes)
+        );
+      }
 
       // Save generated questions to database
       for (let i = 0; i < questions.length; i++) {
@@ -327,7 +377,11 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
             quizId,
             text: questionData.text,
             type: questionData.type || "multiple_choice",
-            order: i + 1,
+            order: questionData.order !== undefined ? questionData.order : i + 1,
+            // Store conditional rules for smart question flow
+            conditionalRules: questionData.conditionalRules 
+              ? JSON.stringify(questionData.conditionalRules)
+              : null,
           },
         });
 
@@ -335,15 +389,25 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
         for (let j = 0; j < questionData.options.length; j++) {
           const option = questionData.options[j];
 
+          // Build product matching data with budget metadata
+          const productMatching: any = {
+            tags: option.matchingTags || [],
+            types: option.matchingTypes || [],
+          };
+
+          // Add budget constraints for conditional logic
+          if (option.budgetMin !== undefined) productMatching.budgetMin = option.budgetMin;
+          if (option.budgetMax !== undefined) productMatching.budgetMax = option.budgetMax;
+          
+          // Add price range for filtering
+          if (option.priceRange) productMatching.priceRange = option.priceRange;
+
           await prisma.questionOption.create({
             data: {
               questionId: createdQuestion.id,
               text: option.text,
               order: j + 1,
-              productMatching: JSON.stringify({
-                tags: option.matchingTags || [],
-                types: option.matchingTypes || [],
-              }),
+              productMatching: JSON.stringify(productMatching),
             },
           });
         }
@@ -421,6 +485,14 @@ export default function EditQuiz() {
   const [searchLoading, setSearchLoading] = useState<{
     [key: string]: boolean;
   }>({});
+  const [searchDebounceTimeout, setSearchDebounceTimeout] = useState<{
+    [key: string]: NodeJS.Timeout | null;
+  }>({});
+  
+  // Track selected product IDs per question for advanced matching
+  const [selectedProductIds, setSelectedProductIds] = useState<{
+    [key: string]: string[];
+  }>({});
 
   // Product attributes state
   const [availableTags, setAvailableTags] = useState<string[]>([]);
@@ -433,6 +505,15 @@ export default function EditQuiz() {
     {},
   );
   const [currentStatus, setCurrentStatus] = useState(quiz.status);
+
+  // Cleanup debounce timeouts on unmount
+  useEffect(() => {
+    return () => {
+      Object.values(searchDebounceTimeout).forEach((timeout) => {
+        if (timeout) clearTimeout(timeout);
+      });
+    };
+  }, [searchDebounceTimeout]);
 
   // Show toast on action completion
   useEffect(() => {
@@ -521,6 +602,7 @@ export default function EditQuiz() {
     const imageUrl = newOptionImageUrl[questionId];
     const tags = newOptionTags[questionId];
     const types = newOptionTypes[questionId];
+    const productIds = selectedProductIds[questionId] || [];
 
     if (!optionText?.trim()) {
       shopify.toast.show("Please enter option text", { isError: true });
@@ -534,6 +616,7 @@ export default function EditQuiz() {
     formData.append("imageUrl", imageUrl || "");
     formData.append("productTags", tags || "");
     formData.append("productTypes", types || "");
+    formData.append("productIds", productIds.join(","));
     fetcher.submit(formData, { method: "POST" });
 
     // Clear form
@@ -541,6 +624,8 @@ export default function EditQuiz() {
     setNewOptionImageUrl((prev) => ({ ...prev, [questionId]: "" }));
     setNewOptionTags((prev) => ({ ...prev, [questionId]: "" }));
     setNewOptionTypes((prev) => ({ ...prev, [questionId]: "" }));
+    setSelectedProductIds((prev) => ({ ...prev, [questionId]: [] }));
+    setSelectedProducts((prev) => ({ ...prev, [questionId]: [] }));
   };
 
   const handleDeleteOption = (optionId: string) => {
@@ -553,34 +638,47 @@ export default function EditQuiz() {
   };
 
   const searchProducts = async (questionId: string, query: string) => {
+    // Clear any existing timeout for this question
+    if (searchDebounceTimeout[questionId]) {
+      clearTimeout(searchDebounceTimeout[questionId]!);
+    }
+
     if (!query.trim()) {
       setSearchResults((prev) => ({ ...prev, [questionId]: [] }));
+      setSearchDebounceTimeout((prev) => ({ ...prev, [questionId]: null }));
       return;
     }
 
+    // Set loading state immediately for UX feedback
     setSearchLoading((prev) => ({ ...prev, [questionId]: true }));
 
-    try {
-      const response = await fetch(
-        `/api/products?query=${encodeURIComponent(query)}&limit=20`,
-      );
-      const data = await response.json();
+    // Debounce the actual API call
+    const timeout = setTimeout(async () => {
+      try {
+        const response = await fetch(
+          `/api/products?query=${encodeURIComponent(query)}&limit=20`,
+        );
+        const data = await response.json();
 
-      if (response.ok) {
-        setSearchResults((prev) => ({
-          ...prev,
-          [questionId]: data.products || [],
-        }));
-      } else {
-        shopify.toast.show(data.error || "Failed to search products", {
-          isError: true,
-        });
+        if (response.ok) {
+          setSearchResults((prev) => ({
+            ...prev,
+            [questionId]: data.products || [],
+          }));
+        } else {
+          shopify.toast.show(data.error || "Failed to search products", {
+            isError: true,
+          });
+        }
+      } catch (error) {
+        shopify.toast.show("Failed to search products", { isError: true });
+      } finally {
+        setSearchLoading((prev) => ({ ...prev, [questionId]: false }));
+        setSearchDebounceTimeout((prev) => ({ ...prev, [questionId]: null }));
       }
-    } catch (error) {
-      shopify.toast.show("Failed to search products", { isError: true });
-    } finally {
-      setSearchLoading((prev) => ({ ...prev, [questionId]: false }));
-    }
+    }, 300); // 300ms debounce delay
+
+    setSearchDebounceTimeout((prev) => ({ ...prev, [questionId]: timeout }));
   };
 
   const toggleProductSelection = (questionId: string, productId: string) => {
@@ -601,20 +699,15 @@ export default function EditQuiz() {
 
   const handleAdvancedProductMatching = (questionId: string) => {
     const selected = selectedProducts[questionId] || [];
-    const productIds = selected.join(",");
-
-    // Update the form fields with selected product IDs
-    setNewOptionTags((prev) => ({
+    
+    // Store the selected product IDs for this question
+    setSelectedProductIds((prev) => ({
       ...prev,
-      [questionId]:
-        prev[questionId] +
-        (prev[questionId] ? "," : "") +
-        "selected_products:" +
-        productIds,
+      [questionId]: selected,
     }));
 
     setShowProductBrowser((prev) => ({ ...prev, [questionId]: false }));
-    shopify.toast.show(`Selected ${selected.length} products for matching`);
+    shopify.toast.show(`${selected.length} product(s) selected for this option`);
   };
 
   const addTagToOption = (questionId: string, tag: string) => {
@@ -650,10 +743,21 @@ export default function EditQuiz() {
   };
 
   return (
-    <s-page
-      heading={quiz.title}
-      backAction={{ onAction: () => navigate("/app/quizzes") }}
-    >
+    <>
+      <style>{`
+        @keyframes pulse {
+          0%, 100% {
+            opacity: 1;
+          }
+          50% {
+            opacity: 0.5;
+          }
+        }
+      `}</style>
+      <s-page
+        heading={quiz.title}
+        backAction={{ onAction: () => navigate("/app/quizzes") }}
+      >
       <s-button
         slot="primary-action"
         variant="primary"
@@ -1060,12 +1164,57 @@ export default function EditQuiz() {
                                 />
 
                                 {searchLoading[question.id] && (
-                                  <s-text variant="body-sm" color="subdued">
-                                    Searching...
-                                  </s-text>
+                                  <s-stack direction="block" gap="base">
+                                    <s-text variant="body-sm" color="subdued">
+                                      Searching products...
+                                    </s-text>
+                                    {/* Loading skeletons */}
+                                    {[1, 2, 3].map((i) => (
+                                      <s-box
+                                        key={i}
+                                        padding="base"
+                                        borderWidth="base"
+                                        borderRadius="base"
+                                        background="subdued"
+                                      >
+                                        <s-stack direction="inline" gap="base">
+                                          <s-box
+                                            style={{
+                                              width: "40px",
+                                              height: "40px",
+                                              backgroundColor: "#e3e3e3",
+                                              borderRadius: "4px",
+                                              animation: "pulse 1.5s ease-in-out infinite",
+                                            }}
+                                          />
+                                          <s-stack direction="block" gap="tight" style={{ flex: 1 }}>
+                                            <s-box
+                                              style={{
+                                                width: "60%",
+                                                height: "16px",
+                                                backgroundColor: "#e3e3e3",
+                                                borderRadius: "4px",
+                                                animation: "pulse 1.5s ease-in-out infinite",
+                                              }}
+                                            />
+                                            <s-box
+                                              style={{
+                                                width: "40%",
+                                                height: "14px",
+                                                backgroundColor: "#e3e3e3",
+                                                borderRadius: "4px",
+                                                animation: "pulse 1.5s ease-in-out infinite",
+                                              }}
+                                            />
+                                          </s-stack>
+                                        </s-stack>
+                                      </s-box>
+                                    ))}
+                                  </s-stack>
                                 )}
 
-                                {searchResults[question.id] &&
+                                {!searchLoading[question.id] &&
+                                  searchResults[question.id] &&
                                   searchResults[question.id].length > 0 && (
                                     <s-stack direction="block" gap="tight">
                                       <s-text variant="body-sm">
@@ -1080,20 +1229,28 @@ export default function EditQuiz() {
                                         }}
                                       >
                                         {searchResults[question.id].map(
-                                          (product) => (
+                                          (product) => {
+                                            const isSelected = selectedProducts[
+                                              question.id
+                                            ]?.includes(product.id);
+                                            
+                                            return (
                                             <s-box
                                               key={product.id}
-                                              padding="tight"
+                                              padding="base"
                                               borderWidth="base"
                                               borderRadius="base"
                                               background={
-                                                selectedProducts[
-                                                  question.id
-                                                ]?.includes(product.id)
+                                                isSelected
                                                   ? "success-subdued"
-                                                  : "subdued"
+                                                  : "surface"
                                               }
-                                              style={{ cursor: "pointer" }}
+                                              style={{ 
+                                                cursor: "pointer",
+                                                border: isSelected ? "2px solid #008060" : "1px solid #c9cccf",
+                                                transition: "all 0.2s ease",
+                                                position: "relative"
+                                              }}
                                               onClick={() =>
                                                 toggleProductSelection(
                                                   question.id,
@@ -1106,6 +1263,40 @@ export default function EditQuiz() {
                                                 gap="base"
                                                 align="center"
                                               >
+                                                {/* Checkbox indicator */}
+                                                <div
+                                                  style={{
+                                                    width: "20px",
+                                                    height: "20px",
+                                                    borderRadius: "4px",
+                                                    border: isSelected ? "2px solid #008060" : "2px solid #c9cccf",
+                                                    backgroundColor: isSelected ? "#008060" : "white",
+                                                    display: "flex",
+                                                    alignItems: "center",
+                                                    justifyContent: "center",
+                                                    flexShrink: 0,
+                                                    transition: "all 0.2s ease"
+                                                  }}
+                                                >
+                                                  {isSelected && (
+                                                    <svg
+                                                      width="14"
+                                                      height="14"
+                                                      viewBox="0 0 20 20"
+                                                      fill="none"
+                                                      xmlns="http://www.w3.org/2000/svg"
+                                                    >
+                                                      <path
+                                                        d="M16 6L8.5 13.5L4 9"
+                                                        stroke="white"
+                                                        strokeWidth="2.5"
+                                                        strokeLinecap="round"
+                                                        strokeLinejoin="round"
+                                                      />
+                                                    </svg>
+                                                  )}
+                                                </div>
+                                                
                                                 {product.imageUrl && (
                                                   <img
                                                     src={product.imageUrl}
@@ -1124,10 +1315,29 @@ export default function EditQuiz() {
                                                 <s-stack
                                                   direction="block"
                                                   gap="tight"
+                                                  style={{ flex: 1 }}
                                                 >
-                                                  <s-text variant="heading-sm">
-                                                    {product.title}
-                                                  </s-text>
+                                                  <s-stack direction="inline" gap="tight" align="center">
+                                                    <s-text variant="heading-sm">
+                                                      {product.title}
+                                                    </s-text>
+                                                    {/* Status badge */}
+                                                    <s-badge
+                                                      tone={
+                                                        product.status === "ACTIVE"
+                                                          ? "success"
+                                                          : product.status === "DRAFT"
+                                                          ? "attention"
+                                                          : "subdued"
+                                                      }
+                                                    >
+                                                      {product.status === "ACTIVE"
+                                                        ? "Active"
+                                                        : product.status === "DRAFT"
+                                                        ? "Draft"
+                                                        : "Archived"}
+                                                    </s-badge>
+                                                  </s-stack>
                                                   <s-text
                                                     variant="body-sm"
                                                     color="subdued"
@@ -1136,58 +1346,108 @@ export default function EditQuiz() {
                                                     {product.price.min.toFixed(
                                                       2,
                                                     )}
+                                                    {/* Inventory indicator */}
+                                                    {product.totalInventory !== undefined && (
+                                                      <>
+                                                        {" • "}
+                                                        <span
+                                                          style={{
+                                                            color:
+                                                              product.totalInventory === 0
+                                                                ? "#bf0711"
+                                                                : product.totalInventory < 10
+                                                                ? "#b98900"
+                                                                : "#008060",
+                                                          }}
+                                                        >
+                                                          {product.totalInventory === 0
+                                                            ? "Out of stock"
+                                                            : product.totalInventory < 10
+                                                            ? `Low stock: ${product.totalInventory}`
+                                                            : `${product.totalInventory} in stock`}
+                                                        </span>
+                                                      </>
+                                                    )}
                                                     {product.tags.length > 0 &&
                                                       ` • Tags: ${product.tags.slice(0, 3).join(", ")}`}
                                                   </s-text>
                                                 </s-stack>
-                                                {selectedProducts[
-                                                  question.id
-                                                ]?.includes(product.id) && (
-                                                  <s-icon source="checkmark" />
-                                                )}
                                               </s-stack>
                                             </s-box>
-                                          ),
+                                            );
+                                          }
                                         )}
                                       </s-stack>
 
                                       {selectedProducts[question.id] &&
                                         selectedProducts[question.id].length >
                                           0 && (
-                                          <s-stack
-                                            direction="inline"
-                                            gap="base"
+                                          <s-box
+                                            padding="base"
+                                            borderWidth="base"
+                                            borderRadius="base"
+                                            style={{
+                                              backgroundColor: "#e0f5ef",
+                                              borderColor: "#008060"
+                                            }}
                                           >
-                                            <s-text variant="body-sm">
-                                              {
-                                                selectedProducts[question.id]
-                                                  .length
-                                              }{" "}
-                                              products selected
-                                            </s-text>
-                                            <s-button
-                                              onClick={() =>
-                                                handleAdvancedProductMatching(
-                                                  question.id,
-                                                )
-                                              }
-                                              variant="primary"
-                                              size="sm"
+                                            <s-stack
+                                              direction="inline"
+                                              gap="base"
+                                              align="center"
                                             >
-                                              Use Selected Products
-                                            </s-button>
-                                          </s-stack>
+                                              <s-icon source="checkmark-circle" color="success" />
+                                              <s-text variant="body-sm" style={{ fontWeight: "500", flex: 1 }}>
+                                                {selectedProducts[question.id].length}{" "}
+                                                product{selectedProducts[question.id].length > 1 ? "s" : ""} selected
+                                              </s-text>
+                                              <s-button
+                                                onClick={() =>
+                                                  handleAdvancedProductMatching(
+                                                    question.id,
+                                                  )
+                                                }
+                                                variant="primary"
+                                              >
+                                                Use Selected Products
+                                              </s-button>
+                                            </s-stack>
+                                          </s-box>
                                         )}
                                     </s-stack>
                                   )}
 
-                                {searchResults[question.id] &&
+                                {!searchLoading[question.id] &&
+                                  searchResults[question.id] &&
                                   searchResults[question.id].length === 0 &&
                                   productSearchQuery[question.id] && (
-                                    <s-text variant="body-sm" color="subdued">
-                                      No products found for "
-                                      {productSearchQuery[question.id]}"
-                                    </s-text>
+                                    <s-box
+                                      padding="base"
+                                      borderWidth="base"
+                                      borderRadius="base"
+                                      background="subdued"
+                                    >
+                                      <s-stack direction="block" gap="tight">
+                                        <s-text variant="body-sm" color="subdued">
+                                          No products found for &quot;
+                                          {productSearchQuery[question.id]}&quot;
+                                        </s-text>
+                                        <s-text variant="body-sm" color="subdued">
+                                          Try searching by:
+                                        </s-text>
+                                        <s-stack direction="block" gap="tight">
+                                          <s-text variant="body-sm" color="subdued">
+                                            • Product name (e.g., &quot;Snowboard&quot;)
+                                          </s-text>
+                                          <s-text variant="body-sm" color="subdued">
+                                            • Product type (e.g., &quot;Apparel&quot;, &quot;Sports&quot;)
+                                          </s-text>
+                                          <s-text variant="body-sm" color="subdued">
+                                            • Product tag (e.g., &quot;Winter&quot;, &quot;Sale&quot;)
+                                          </s-text>
+                                        </s-stack>
+                                      </s-stack>
+                                    </s-box>
                                   )}
                               </s-stack>
                             )}
@@ -1306,12 +1566,299 @@ export default function EditQuiz() {
         </s-stack>
       </s-section>
     </s-page>
+    </>
   );
 }
 
 /**
+ * AI-powered quiz question generation using OpenAI GPT-4o-mini
+ * Analyzes actual product prices to create budget-aware questions
+ */
+async function generateQuestionsWithAI(
+  products: any[],
+  tags: string[],
+  types: string[],
+  style: string,
+  quizTitle: string
+) {
+  if (!openai) {
+    throw new Error("OpenAI client not initialized");
+  }
+
+  // Calculate price ranges for budget questions
+  const prices = products
+    .map(p => parseFloat(p.variants?.edges?.[0]?.node?.price || 0))
+    .filter(p => p > 0);
+  
+  const avgPrice = prices.length > 0 
+    ? prices.reduce((a, b) => a + b, 0) / prices.length 
+    : 50;
+  const minPrice = prices.length > 0 ? Math.min(...prices) : 0;
+  const maxPrice = prices.length > 0 ? Math.max(...prices) : 100;
+
+  // Analyze price distribution by product type
+  // This ensures we only ask about categories that have products at various price points
+  const priceByType: Record<string, number[]> = {};
+  products.forEach(p => {
+    const type = p.productType;
+    const price = parseFloat(p.variants?.edges?.[0]?.node?.price || 0);
+    if (type && price > 0) {
+      if (!priceByType[type]) priceByType[type] = [];
+      priceByType[type].push(price);
+    }
+  });
+
+  // Calculate price stats per type
+  const typeStats = Object.entries(priceByType).map(([type, prices]) => ({
+    type,
+    count: prices.length,
+    minPrice: Math.min(...prices),
+    maxPrice: Math.max(...prices),
+    avgPrice: prices.reduce((a, b) => a + b, 0) / prices.length,
+  }));
+
+  const systemPrompt = `You are an expert at creating engaging product recommendation quizzes for e-commerce stores. 
+Your goal is to create 5-7 GENERAL questions that work for ALL product categories.
+
+Quiz Style: ${style}
+- "fun": Use casual, playful language with emojis
+- "professional": Use clear, business-appropriate language  
+- "detailed": Use comprehensive, informative language
+
+CRITICAL RULES:
+1. DO NOT create category-specific questions (e.g., "What type of snowboard?")
+2. ALL questions must be GENERAL and work for ANY product type
+3. Ask about: budget, use case, experience level, style preferences, features, occasion
+4. Include ONE product category question with ALL available types as options
+5. Each option MUST have matchingTags or matchingTypes arrays filled with relevant values
+6. Ensure every question text is unique and general (not tied to one category)
+7. Return valid JSON only, no markdown formatting
+
+Good examples:
+- "What's your budget?"
+- "Which category interests you?" (with all types as options)
+- "What's your experience level?" (beginner/intermediate/advanced)
+- "What's your preferred style?" (casual/professional/sporty/etc)
+- "What will you use this for?" (daily use/special occasions/gifts)
+
+Bad examples (TOO SPECIFIC):
+- "What type of snowboard?" ❌
+- "What snowboard features?" ❌
+- "What snowboard brand?" ❌`;
+
+  const userPrompt = `Create a product quiz titled "${quizTitle}" for a store with these products:
+
+Product Types Available: ${types.join(", ")}
+Common Tags: ${tags.slice(0, 20).join(", ")}
+Overall Price Range: $${minPrice.toFixed(2)} - $${maxPrice.toFixed(2)} (avg: $${avgPrice.toFixed(2)})
+
+Price by Category:
+${typeStats.map(s => `- ${s.type}: $${s.minPrice.toFixed(2)}-$${s.maxPrice.toFixed(2)} (${s.count} items)`).join('\n')}
+
+REQUIREMENTS:
+1. Start with a BUDGET question that has 4 price range options
+2. Include ONE category selection question with ALL product types as options: ${types.join(", ")}
+3. Add 3-5 GENERAL questions about: experience level, style, use case, occasion, features
+4. DO NOT ask category-specific questions (no "what type of snowboard", "snowboard features", etc)
+5. ALL questions must work for ANY category the user might choose
+
+For the budget question, use this structure:
+- Divide the price range into 4 brackets based on the overall min/max
+- For EACH budget option, fill matchingTypes with ONLY categories that have products in that price range
+- Example: If Snowboards cost $600+, DO NOT include "Snowboards" in the "$0-$100" option's matchingTypes
+
+For the category question:
+- Include ALL product types as separate options
+- Each option should have matchingTypes: ["CategoryName"]
+
+For other questions (experience, style, use case):
+- Use matchingTags based on common tags available
+- These should be applicable regardless of which category user picks
+
+Return a JSON object with a "questions" array containing 5-7 questions in this format:
+{
+  "questions": [
+    {
+      "text": "What's your budget?",
+      "type": "multiple_choice",
+      "order": 0,
+      "conditionalRules": null,
+      "options": [
+        {
+          "text": "$0-$100",
+          "matchingTags": ["budget", "affordable"],
+          "matchingTypes": ["Accessories", "T-Shirts"],
+          "budgetMax": 100
+        },
+        {
+          "text": "$500+",
+          "matchingTags": ["premium"],
+          "matchingTypes": ["Snowboards", "Skis"],
+          "budgetMin": 500
+        }
+      ]
+    },
+    {
+      "text": "Which category interests you?",
+      "type": "multiple_choice", 
+      "order": 1,
+      "conditionalRules": null,
+      "options": [
+        {
+          "text": "Option text",
+          "matchingTags": ["tag1", "tag2"],
+          "matchingTypes": ["type1"]
+        }
+      ]
+    }
+  ]
+}
+
+IMPORTANT: Every option MUST have either matchingTags or matchingTypes with actual values from the product data.
+Use the tags and types provided above. For example:
+- If you see "Snowboards" in types, use it: "matchingTypes": ["Snowboards"]
+- If you see "beginner" in tags, use it: "matchingTags": ["beginner"]
+
+Requirements:
+- Include a budget question with 4 options covering the price range
+- Use actual product tags and types from the data provided
+- Make questions relevant to the products
+- Use ${style} style throughout
+- Return valid JSON only`;
+
+  try {
+    const completion = await openai.chat.completions.create({
+      model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+      temperature: 0.7,
+      max_tokens: 2000,
+      response_format: { type: "json_object" },
+    });
+
+    const responseText = completion.choices[0]?.message?.content;
+    if (!responseText) {
+      throw new Error("Empty response from OpenAI");
+    }
+
+    // Parse the response
+    let parsedResponse = JSON.parse(responseText);
+    
+    // Handle different response formats
+    if (parsedResponse.questions) {
+      parsedResponse = parsedResponse.questions;
+    } else if (!Array.isArray(parsedResponse)) {
+      throw new Error("Invalid response format from OpenAI");
+    }
+
+    // Validate and sanitize the questions (initial pass)
+    const rawQuestions = parsedResponse.map((q: any, idx: number) => ({
+      text: (q.text || `Question ${idx + 1}`).trim(),
+      type: q.type || "multiple_choice",
+      order: typeof q.order === 'number' ? q.order : idx,
+      conditionalRules: q.conditionalRules || null,
+      options: (q.options || []).map((opt: any) => ({
+        text: (opt.text || "Option").trim(),
+        matchingTags: Array.isArray(opt.matchingTags)
+          ? opt.matchingTags.filter((tag: string) => tags.includes(tag))
+          : [],
+        matchingTypes: Array.isArray(opt.matchingTypes)
+          ? opt.matchingTypes.filter((type: string) => types.includes(type))
+          : [],
+        // Preserve budget metadata for conditional logic
+        budgetMin: opt.budgetMin,
+        budgetMax: opt.budgetMax,
+      })),
+    }));
+
+    // Deduplicate questions by normalized text and merge options when duplicates occur
+    const questionMap = new Map<string, any>();
+
+    for (const q of rawQuestions) {
+      const key = (q.text || '').toLowerCase().replace(/\s+/g, ' ').trim();
+
+      // normalize options and dedupe them by text
+      const normalizedOpts = (q.options || []).map((o: any) => ({
+        text: (o.text || '').trim(),
+        matchingTags: Array.isArray(o.matchingTags) ? o.matchingTags : [],
+        matchingTypes: Array.isArray(o.matchingTypes) ? o.matchingTypes : [],
+        budgetMin: o.budgetMin,
+        budgetMax: o.budgetMax,
+      }));
+
+      if (!questionMap.has(key)) {
+        const optMap = new Map<string, any>();
+        for (const o of normalizedOpts) {
+          const ok = (o.text || '').toLowerCase();
+          if (!optMap.has(ok)) {
+            optMap.set(ok, o);
+          } else {
+            const ex = optMap.get(ok);
+            ex.matchingTags = Array.from(new Set([...(ex.matchingTags || []), ...(o.matchingTags || [])]));
+            ex.matchingTypes = Array.from(new Set([...(ex.matchingTypes || []), ...(o.matchingTypes || [])]));
+            ex.budgetMin = ex.budgetMin ?? o.budgetMin;
+            ex.budgetMax = ex.budgetMax ?? o.budgetMax;
+          }
+        }
+
+        questionMap.set(key, {
+          ...q,
+          text: q.text,
+          options: Array.from(optMap.values()),
+        });
+      } else {
+        // merge options into existing question
+        const existing = questionMap.get(key);
+        const existingOptMap = new Map((existing.options || []).map((o: any) => [ (o.text||'').toLowerCase(), o ]));
+        for (const o of normalizedOpts) {
+          const ok = (o.text || '').toLowerCase();
+          if (!existingOptMap.has(ok)) {
+            existing.options.push(o);
+            existingOptMap.set(ok, o);
+          } else {
+            const ex = existingOptMap.get(ok);
+            ex.matchingTags = Array.from(new Set([...(ex.matchingTags || []), ...(o.matchingTags || [])]));
+            ex.matchingTypes = Array.from(new Set([...(ex.matchingTypes || []), ...(o.matchingTypes || [])]));
+            ex.budgetMin = ex.budgetMin ?? o.budgetMin;
+            ex.budgetMax = ex.budgetMax ?? o.budgetMax;
+          }
+        }
+      }
+    }
+
+    let finalQuestions = Array.from(questionMap.values()).sort((a, b) => (a.order || 0) - (b.order || 0));
+
+    // If deduplication reduced the count below 5, supplement with basic generated questions
+    if (finalQuestions.length < 5) {
+      const supplement = generateBasicQuestions(products, tags, types);
+      for (const s of supplement) {
+        const sk = (s.text || '').toLowerCase().replace(/\s+/g, ' ').trim();
+        if (!questionMap.has(sk)) {
+          finalQuestions.push(s);
+          questionMap.set(sk, s);
+        }
+        if (finalQuestions.length >= 5) break;
+      }
+    }
+
+    console.log("AI generation stats:", {
+      model: completion.model,
+      tokensUsed: completion.usage?.total_tokens,
+      questionsGenerated: finalQuestions.length,
+    });
+
+    return finalQuestions;
+  } catch (error: any) {
+    console.error("OpenAI API error:", error);
+    throw new Error(`AI generation failed: ${error.message}`);
+  }
+}
+
+/**
  * Generate basic quiz questions from product catalog
- * This is a simplified version that creates questions based on product attributes
+ * Budget-aware fallback - analyzes price distribution by product type
  */
 function generateBasicQuestions(
   products: any[],
@@ -1320,10 +1867,23 @@ function generateBasicQuestions(
 ) {
   const questions: any[] = [];
 
+  // Analyze price distribution by product type for smart budget questions
+  const priceByType: Record<string, number[]> = {};
+  products.forEach(p => {
+    const type = p.productType;
+    const price = parseFloat(p.variants?.edges?.[0]?.node?.price || 0);
+    if (type && price > 0) {
+      if (!priceByType[type]) priceByType[type] = [];
+      priceByType[type].push(price);
+    }
+  });
+
   // Question 1: Purpose/Use Case
   questions.push({
     text: "What are you looking for?",
     type: "multiple_choice",
+    order: 0,
+    conditionalRules: null,
     options: [
       { text: "Something for everyday use", matchingTags: ["daily", "essential", "basic"], matchingTypes: [] },
       { text: "A special occasion item", matchingTags: ["luxury", "premium", "special"], matchingTypes: [] },
@@ -1332,37 +1892,76 @@ function generateBasicQuestions(
     ],
   });
 
-  // Question 2: Budget (if products have varying prices)
+  // Question 2: Budget (FIRST filter - most important for conditional logic)
   const prices = products
     .map(p => parseFloat(p.variants?.edges?.[0]?.node?.price || 0))
     .filter(p => p > 0);
 
   if (prices.length > 0) {
     const avgPrice = prices.reduce((a, b) => a + b, 0) / prices.length;
+    const budgetRanges = [
+      { max: avgPrice * 0.5, label: `Under $${Math.round(avgPrice * 0.5)}`, tags: ["budget", "affordable"] },
+      { min: avgPrice * 0.5, max: avgPrice, label: `$${Math.round(avgPrice * 0.5)} - $${Math.round(avgPrice)}`, tags: [] },
+      { min: avgPrice, max: avgPrice * 1.5, label: `$${Math.round(avgPrice)} - $${Math.round(avgPrice * 1.5)}`, tags: ["premium"] },
+      { min: avgPrice * 1.5, label: `Over $${Math.round(avgPrice * 1.5)}`, tags: ["luxury", "premium", "high-end"] },
+    ];
+
+    // For each budget range, find product types that actually exist at that price
+    const budgetOptions = budgetRanges.map(range => {
+      const affordableTypes = Object.entries(priceByType)
+        .filter(([, prices]) => {
+          const minPrice = Math.min(...prices);
+          const maxPrice = Math.max(...prices);
+          
+          // Check if this type has products in this price range
+          if (range.max && !range.min) return minPrice <= range.max;
+          if (range.min && !range.max) return maxPrice >= range.min;
+          if (range.min && range.max) return !(maxPrice < range.min || minPrice > range.max);
+          return true;
+        })
+        .map(([type]) => type);
+
+      return {
+        text: range.label,
+        matchingTags: range.tags,
+        matchingTypes: affordableTypes.slice(0, 3), // Limit to top 3 types per budget
+        budgetMin: range.min,
+        budgetMax: range.max,
+      };
+    });
 
     questions.push({
       text: "What's your budget?",
       type: "multiple_choice",
-      options: [
-        { text: `Under $${Math.round(avgPrice * 0.5)}`, matchingTags: ["budget", "affordable"], matchingTypes: [] },
-        { text: `$${Math.round(avgPrice * 0.5)} - $${Math.round(avgPrice)}`, matchingTags: [], matchingTypes: [] },
-        { text: `$${Math.round(avgPrice)} - $${Math.round(avgPrice * 1.5)}`, matchingTags: ["premium"], matchingTypes: [] },
-        { text: `Over $${Math.round(avgPrice * 1.5)}`, matchingTags: ["luxury", "premium", "high-end"], matchingTypes: [] },
-      ],
+      order: 1,
+      conditionalRules: null, // Budget question has no conditions (it's first)
+      options: budgetOptions,
     });
   }
 
-  // Question 3: Product Type (if multiple types exist)
+  // Question 3: Product Type (budget-aware using conditional logic)
   if (types.length > 1) {
-    const typeOptions = types.slice(0, 4).map(type => ({
-      text: type,
-      matchingTags: [],
-      matchingTypes: [type],
-    }));
+    // Create budget-aware type options
+    const typeOptions = types.slice(0, 6).map(type => {
+      const typePrices = priceByType[type] || [];
+      const minTypePrice = typePrices.length > 0 ? Math.min(...typePrices) : 0;
+      const maxTypePrice = typePrices.length > 0 ? Math.max(...typePrices) : 0;
+
+      return {
+        text: type,
+        matchingTags: [],
+        matchingTypes: [type],
+        // Add price metadata for conditional logic
+        priceRange: { min: minTypePrice, max: maxTypePrice },
+      };
+    });
 
     questions.push({
       text: "Which category interests you most?",
       type: "multiple_choice",
+      order: 2,
+      // Note: Actual filtering happens client-side based on budget answer
+      conditionalRules: { filterByBudget: true },
       options: typeOptions,
     });
   }
@@ -1377,6 +1976,8 @@ function generateBasicQuestions(
     questions.push({
       text: "What style appeals to you?",
       type: "multiple_choice",
+      order: 3,
+      conditionalRules: null,
       options: availableStyles.slice(0, 4).map(styleTag => ({
         text: styleTag.charAt(0).toUpperCase() + styleTag.slice(1),
         matchingTags: [styleTag],
@@ -1389,6 +1990,8 @@ function generateBasicQuestions(
   questions.push({
     text: "What's most important to you?",
     type: "multiple_choice",
+    order: 4,
+    conditionalRules: null,
     options: [
       { text: "Quality and durability", matchingTags: ["durable", "quality", "premium"], matchingTypes: [] },
       { text: "Eco-friendly and sustainable", matchingTags: ["eco", "sustainable", "organic", "natural"], matchingTypes: [] },

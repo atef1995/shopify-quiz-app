@@ -4,13 +4,13 @@
  * Handles quiz flow, question navigation, email capture,
  * and product recommendations on the storefront.
  *
- * TODO: CRITICAL - Connect to real API endpoints instead of using placeholder data
- * TODO: Add localStorage to save quiz progress (prevent loss on page refresh)
+ * Features:
+ * ✅ Fetches quiz data from API
+ * ✅ localStorage for progress persistence (prevents loss on refresh)
+ * ✅ Budget-aware conditional logic
  * TODO: Add analytics events (quiz_started, question_answered, quiz_completed)
- * TODO: Add loading states for async operations
  * TODO: Add error retry logic for failed API calls
  * TODO: Add keyboard navigation support (arrow keys, Enter)
- * BUG: Currently using hardcoded quiz data instead of fetching from API
  */
 
 (function () {
@@ -21,6 +21,9 @@
   let currentQuestionIndex = 0;
   let answers = [];
   let customerEmail = null;
+
+  // localStorage key prefix for this quiz session
+  let storageKey = null;
 
   // DOM elements
   const container = document.querySelector('.quiz-container');
@@ -42,6 +45,106 @@
   const emailCaptureEl = document.getElementById('quiz-email-capture');
   const resultsEl = document.getElementById('quiz-results');
   const errorEl = document.getElementById('quiz-error');
+
+  /**
+   * LocalStorage helper functions for quiz progress persistence
+   */
+
+  // Generate unique storage key for this quiz session
+  function getStorageKey() {
+    if (!storageKey && quizId) {
+      storageKey = `quiz_progress_${quizId}`;
+    }
+    return storageKey;
+  }
+
+  // Save current progress to localStorage
+  function saveProgress() {
+    try {
+      const progress = {
+        answers: answers,
+        currentQuestionIndex: currentQuestionIndex,
+        email: customerEmail,
+        timestamp: Date.now(),
+        quizId: quizId
+      };
+      localStorage.setItem(getStorageKey(), JSON.stringify(progress));
+      console.log('Progress saved to localStorage:', progress);
+    } catch (error) {
+      console.warn('Failed to save progress to localStorage:', error);
+      // Non-critical error - quiz continues to work without persistence
+    }
+  }
+
+  // Load progress from localStorage
+  function loadProgress() {
+    try {
+      const stored = localStorage.getItem(getStorageKey());
+      if (!stored) return null;
+
+      const progress = JSON.parse(stored);
+
+      // Verify it's for the same quiz
+      if (progress.quizId !== quizId) {
+        clearProgress();
+        return null;
+      }
+
+      // Check if progress is stale (older than 7 days)
+      const maxAge = 7 * 24 * 60 * 60 * 1000; // 7 days in milliseconds
+      if (Date.now() - progress.timestamp > maxAge) {
+        clearProgress();
+        return null;
+      }
+
+      console.log('Loaded progress from localStorage:', progress);
+      return progress;
+    } catch (error) {
+      console.warn('Failed to load progress from localStorage:', error);
+      return null;
+    }
+  }
+
+  // Clear saved progress
+  function clearProgress() {
+    try {
+      localStorage.removeItem(getStorageKey());
+      console.log('Progress cleared from localStorage');
+    } catch (error) {
+      console.warn('Failed to clear progress:', error);
+    }
+  }
+
+  // Show notification that progress was restored
+  function showProgressRestoredNotification() {
+    const notification = document.createElement('div');
+    notification.className = 'quiz-progress-notification';
+    notification.textContent = `✓ Welcome back! Resuming from question ${currentQuestionIndex + 1}`;
+    notification.style.cssText = `
+      position: fixed;
+      top: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #008060;
+      color: white;
+      padding: 12px 24px;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+      z-index: 10000;
+      font-size: 14px;
+      font-weight: 500;
+      animation: slideDown 0.3s ease;
+    `;
+
+    document.body.appendChild(notification);
+
+    // Remove after 3 seconds
+    setTimeout(() => {
+      notification.style.opacity = '0';
+      notification.style.transition = 'opacity 0.3s ease';
+      setTimeout(() => notification.remove(), 300);
+    }, 3000);
+  }
 
   /**
    * Initialize quiz - fetch quiz data and render first question
@@ -89,6 +192,30 @@
 
       console.log(`Quiz loaded successfully with ${quizData.questions.length} questions`);
 
+      // Try to restore previous progress
+      const savedProgress = loadProgress();
+      if (savedProgress && savedProgress.answers && savedProgress.answers.length > 0) {
+        // Validate saved answers match current quiz structure
+        const isValid = savedProgress.answers.every((answer, idx) => {
+          if (idx >= quizData.questions.length) return false;
+          const question = quizData.questions[idx];
+          return question && question.options.some(opt => opt.id === answer.optionId);
+        });
+
+        if (isValid) {
+          answers = savedProgress.answers;
+          currentQuestionIndex = Math.min(savedProgress.currentQuestionIndex || 0, quizData.questions.length - 1);
+          customerEmail = savedProgress.email;
+          console.log(`Restored progress: ${answers.length} answers, question ${currentQuestionIndex + 1}`);
+
+          // Show brief notification that progress was restored
+          showProgressRestoredNotification();
+        } else {
+          console.warn('Saved progress is invalid (quiz structure may have changed), starting fresh');
+          clearProgress();
+        }
+      }
+
       loadingEl.style.display = 'none';
       contentEl.style.display = 'block';
 
@@ -111,7 +238,7 @@
   }
 
   /**
-   * Render current question
+   * Render current question with conditional logic filtering
    */
   function renderQuestion() {
     const question = quizData.questions[currentQuestionIndex];
@@ -123,11 +250,14 @@
     // Update question text
     document.querySelector('.question-text').textContent = question.text;
 
+    // Apply conditional logic filtering based on previous answers
+    let filteredOptions = filterOptionsByBudget(question);
+
     // Render options
     const optionsContainer = document.querySelector('.quiz-options');
     optionsContainer.innerHTML = '';
 
-    question.options.forEach(option => {
+    filteredOptions.forEach(option => {
       const optionEl = document.createElement('div');
       optionEl.className = 'quiz-option';
       optionEl.dataset.optionId = option.id;
@@ -150,7 +280,7 @@
         optionEl.classList.add('selected');
       }
 
-      optionEl.addEventListener('click', () => selectOption(option));
+      optionEl.addEventListener('click', (e) => selectOption(option, e));
       optionsContainer.appendChild(optionEl);
     });
 
@@ -171,29 +301,72 @@
   }
 
   /**
-   * Handle option selection
-   *
-   * TODO: Add animation when selecting option
-   * TODO: Save to localStorage immediately for progress persistence
-   * BUG: Uses global 'event' which could fail in some browsers - pass event as parameter
+   * Filter question options based on budget selection from previous answers
+   * Implements smart conditional logic so users only see relevant options
    */
-  function selectOption(option) {
+  function filterOptionsByBudget(question) {
+    // If this question doesn't have conditional rules, return all options
+    if (!question.conditionalRules || !question.conditionalRules.filterByBudget) {
+      return question.options;
+    }
+
+    // Find budget answer from previous questions
+    let budgetMin = 0;
+    let budgetMax = Infinity;
+
+    for (let i = 0; i < currentQuestionIndex; i++) {
+      const answer = answers[i];
+      if (!answer) continue;
+
+      const answeredQuestion = quizData.questions[i];
+      const selectedOption = answeredQuestion.options.find(opt => opt.id === answer.optionId);
+
+      if (selectedOption && (selectedOption.budgetMin !== undefined || selectedOption.budgetMax !== undefined)) {
+        // Found budget selection
+        budgetMin = selectedOption.budgetMin || 0;
+        budgetMax = selectedOption.budgetMax || Infinity;
+        break;
+      }
+    }
+
+    // Filter options based on budget
+    // Only show product types that have items within the selected budget range
+    return question.options.filter(option => {
+      if (!option.priceRange) return true; // No price info, include it
+
+      const { min, max } = option.priceRange;
+
+      // Check if this product type has ANY items within the budget
+      // Include if: type's min price is within budget OR type's max price is within budget
+      const hasAffordableItems = min <= budgetMax && max >= budgetMin;
+
+      return hasAffordableItems;
+    });
+  }
+
+  /**
+   * Handle option selection
+   */
+  function selectOption(option, event) {
     // Remove previous selection
     document.querySelectorAll('.quiz-option').forEach(el => {
       el.classList.remove('selected');
     });
 
     // Add selection to clicked option
-    // BUG: Relies on global 'event' object - not reliable in all browsers
-    event.target.closest('.quiz-option').classList.add('selected');
+    if (event && event.target) {
+      event.target.closest('.quiz-option').classList.add('selected');
+    }
 
     // Save answer
-    // TODO: Validate option exists in current question before saving
     answers[currentQuestionIndex] = {
       questionId: quizData.questions[currentQuestionIndex].id,
       optionId: option.id,
       optionText: option.text
     };
+
+    // Save progress to localStorage immediately
+    saveProgress();
 
     // Enable next button
     document.querySelector('.quiz-btn-next').disabled = false;
@@ -207,6 +380,7 @@
   function nextQuestion() {
     if (currentQuestionIndex < quizData.questions.length - 1) {
       currentQuestionIndex++;
+      saveProgress(); // Save progress when navigating
       renderQuestion();
       updateProgress();
     } else {
@@ -225,6 +399,7 @@
   function previousQuestion() {
     if (currentQuestionIndex > 0) {
       currentQuestionIndex--;
+      saveProgress(); // Save progress when navigating back
       renderQuestion();
       updateProgress();
     }
@@ -258,12 +433,8 @@
   /**
    * Submit quiz results to backend
    *
-   * TODO: CRITICAL - Implement real API call to /api/quiz/submit
    * TODO: Add loading spinner during submission
-   * TODO: Handle rate limit errors (429) gracefully
-   * TODO: Handle usage limit exceeded errors
    * TODO: Send analytics event: quiz_completed
-   * BUG: No actual API call - quiz results never saved to database
    */
   async function submitQuizResults() {
     try {
@@ -305,16 +476,18 @@
   }
 
   /**
-   * Show quiz results with product recommendations
+   * Display results with product recommendations
    *
    * TODO: Display real products from API response
    * TODO: Add "Add to Cart" functionality for each product
    * TODO: Track which products are clicked for analytics
    * TODO: Add social sharing buttons
    * TODO: Send analytics event: quiz_results_viewed
-   * BUG: Showing placeholder products instead of real recommendations
    */
   function showResults(products) {
+    // Clear saved progress once quiz is completed successfully
+    clearProgress();
+
     emailCaptureEl.style.display = 'none';
     resultsEl.style.display = 'block';
 
@@ -362,8 +535,37 @@
 
       console.log('Product:', product.title, 'Variant ID:', variantId, 'Full variantId:', product.variantId);
 
+      // Truncate description to 100 characters for preview
+      const shortDescription = product.description
+        ? (product.description.length > 100
+          ? product.description.substring(0, 100) + '...'
+          : product.description)
+        : '';
+
+      // Build image carousel HTML
+      const images = product.images && product.images.length > 0 ? product.images : [{ url: product.imageUrl, altText: product.title }];
+      const carouselIndicators = images.length > 1
+        ? `<div class="carousel-indicators">
+            ${images.map((_, idx) => `<span class="indicator ${idx === 0 ? 'active' : ''}" data-index="${idx}"></span>`).join('')}
+           </div>`
+        : '';
+
       productEl.innerHTML = `
-        <img src="${product.imageUrl || product.image}" alt="${product.title}" />
+        <div class="product-image-wrapper">
+          <img src="${product.imageUrl || images[0].url}" alt="${product.title}" class="product-main-image" />
+          <div class="product-hover-overlay">
+            <div class="product-carousel">
+              ${images.map((img, idx) =>
+        `<img src="${img.url}" alt="${img.altText || product.title}" class="carousel-image ${idx === 0 ? 'active' : ''}" data-index="${idx}" />`
+      ).join('')}
+            </div>
+            ${carouselIndicators}
+            <div class="product-description">
+              <p>${shortDescription}</p>
+            </div>
+            <a href="${product.url}" class="view-details-btn" target="_blank">View Full Details →</a>
+          </div>
+        </div>
         <div class="result-product-info">
           <div class="result-product-title">${product.title}</div>
           <div class="result-product-price">${product.price}</div>
@@ -384,8 +586,77 @@
         btn.addEventListener('click', () => addToCart(variantId, product.title));
       }
 
+      // Add hover interaction handlers
+      setupProductHoverInteractions(productEl, images);
+
       productsContainer.appendChild(productEl);
     });
+  }
+
+  /**
+   * Setup hover interactions for product cards
+   * Handles image carousel navigation and overlay display
+   * 
+   * @param {HTMLElement} productEl - The product card element
+   * @param {Array} images - Array of image objects with url and altText
+   */
+  function setupProductHoverInteractions(productEl, images) {
+    if (images.length <= 1) return; // No carousel needed for single image
+
+    const overlay = productEl.querySelector('.product-hover-overlay');
+    const carouselImages = productEl.querySelectorAll('.carousel-image');
+    const indicators = productEl.querySelectorAll('.indicator');
+    let currentIndex = 0;
+    let carouselInterval = null;
+
+    // Auto-rotate images every 2 seconds on hover
+    productEl.addEventListener('mouseenter', () => {
+      overlay.style.opacity = '1';
+      overlay.style.pointerEvents = 'auto';
+
+      // Start auto-rotation
+      carouselInterval = setInterval(() => {
+        currentIndex = (currentIndex + 1) % images.length;
+        updateCarousel();
+      }, 2000);
+    });
+
+    productEl.addEventListener('mouseleave', () => {
+      overlay.style.opacity = '0';
+      overlay.style.pointerEvents = 'none';
+
+      // Stop auto-rotation and reset to first image
+      clearInterval(carouselInterval);
+      currentIndex = 0;
+      updateCarousel();
+    });
+
+    // Click indicators to jump to specific image
+    indicators.forEach((indicator, idx) => {
+      indicator.addEventListener('click', (e) => {
+        e.stopPropagation();
+        clearInterval(carouselInterval); // Stop auto-rotation on manual interaction
+        currentIndex = idx;
+        updateCarousel();
+
+        // Resume auto-rotation after 3 seconds
+        setTimeout(() => {
+          carouselInterval = setInterval(() => {
+            currentIndex = (currentIndex + 1) % images.length;
+            updateCarousel();
+          }, 2000);
+        }, 3000);
+      });
+    });
+
+    function updateCarousel() {
+      carouselImages.forEach((img, idx) => {
+        img.classList.toggle('active', idx === currentIndex);
+      });
+      indicators.forEach((ind, idx) => {
+        ind.classList.toggle('active', idx === currentIndex);
+      });
+    }
   }
 
   /**

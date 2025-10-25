@@ -32,11 +32,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   try {
     const formData = await request.formData();
     const quizId = formData.get("quizId") as string;
-    const style = formData.get("style") as string || "professional";
-    // TODO: Validate style is one of: fun, professional, detailed
-    const productLimit = parseInt(formData.get("productLimit") as string) || 50;
-    // BUG: No validation on productLimit - could request 10000+ products and cause timeout
-    // Add max limit validation: productLimit = Math.min(productLimit, 100)
+    const rawStyle = formData.get("style") as string || "professional";
+    
+    // Validate style is one of allowed values
+    const allowedStyles = ["fun", "professional", "detailed"];
+    const style = allowedStyles.includes(rawStyle) ? rawStyle : "professional";
+    
+    // Validate and cap product limit to prevent timeouts and excessive API costs
+    const rawLimit = parseInt(formData.get("productLimit") as string) || 50;
+    const productLimit = Math.max(10, Math.min(rawLimit, 100)); // Between 10 and 100
 
     if (!quizId) {
       return Response.json(
@@ -87,11 +91,21 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       }
     );
 
-    const productsData = await productsResponse.json();
+    const productsData: any = await productsResponse.json();
+    
+    // Check for GraphQL errors before processing data
+    if (productsData.errors && Array.isArray(productsData.errors)) {
+      console.error("[Quiz Generate] GraphQL errors:", productsData.errors);
+      return Response.json(
+        { 
+          error: "Failed to fetch products from Shopify", 
+          details: productsData.errors[0]?.message || "Unknown GraphQL error"
+        },
+        { status: 500 }
+      );
+    }
+    
     const products = productsData.data?.products?.edges?.map((edge: any) => edge.node) || [];
-
-    // TODO: Handle GraphQL errors from productsResponse
-    // BUG: Not checking for GraphQL errors - productsData.errors could exist
 
     if (products.length === 0) {
       return Response.json(

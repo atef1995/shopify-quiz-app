@@ -1,0 +1,32 @@
+# fly.toml app configuration file generated for product-quiz-builder
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+
+app = "product-quiz-builder"
+primary_region = "iad" # Washington DC - closest to Shopify's servers
+
+[build]
+
+[deploy]
+  release_command = "npx prisma db push --accept-data-loss --skip-generate"
+
+[env]
+  NODE_ENV = "production"
+  PORT = "8080"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop" # Save money - stop when idle
+  auto_start_machines = true
+  min_machines_running = 0 # Free tier friendly
+  processes = ["app"]
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 200
+    hard_limit = 250
+
+[[vm]]
+  memory = "256mb" # Free tier
+  cpu_kind = "shared"
+  cpus = 1

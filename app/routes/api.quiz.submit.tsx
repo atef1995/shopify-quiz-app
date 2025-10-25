@@ -7,16 +7,15 @@ import { unauthenticated } from "../shopify.server";
  * Public API endpoint to submit quiz results from storefront
  *
  * This endpoint:
- * 1. Checks usage limits for the shop
- * 2. Saves quiz completion data
- * 3. Generates product recommendations based on answers
- * 4. Updates analytics
- * 5. Returns recommended products
+ * 1. Validates input (quiz ID, answers, email format)
+ * 2. Checks usage limits for the shop
+ * 3. Saves quiz completion data (transactional)
+ * 4. Generates product recommendations based on answers
+ * 5. Updates analytics atomically
+ * 6. Returns recommended products
  *
  * TODO: Add rate limiting to prevent abuse (e.g., 10 submissions per minute per IP)
  * TODO: Add request signature validation to verify requests come from authorized storefronts
- * BUG: CORS is set to "*" which could allow unauthorized domains to call this API
- *      Consider restricting to shop domains only or using shop-specific tokens
  */
 export const action = async ({ request }: ActionFunctionArgs) => {
   try {
@@ -112,6 +111,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     // Save quiz result and update analytics in a transaction for atomicity
     // This ensures both operations succeed or both fail - prevents inconsistent state
+    // Timeout increased to 10s to handle slow operations (default 5s was too short)
     const result = await prisma.$transaction(async (tx) => {
       // Create quiz result
       const quizResult = await tx.quizResult.create({
@@ -136,11 +136,19 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         },
       });
 
-      // Increment completion count for billing tracking (atomic)
-      await incrementCompletionCount(quiz.shop);
-
       return quizResult;
+    }, {
+      timeout: 10000, // 10 seconds (default is 5s)
     });
+
+    // Increment completion count for billing tracking AFTER transaction
+    // SQLite can't handle concurrent writes, so this must be outside the transaction
+    try {
+      await incrementCompletionCount(quiz.shop);
+    } catch (billingError) {
+      // Log but don't fail the quiz submission if billing update fails
+      console.error("Failed to update billing count:", billingError);
+    }
 
     // Get shop domain for CORS - restrict to actual shop only, not wildcard
     const shopDomain = `https://${quiz.shop}`;
@@ -239,9 +247,10 @@ function extractPriceRange(text: string): { min?: number; max?: number } | null 
  * TODO: Add A/B testing for different recommendation algorithms
  */
 async function generateRecommendations(quiz: any, answers: any[], shop: string) {
-  // Collect all matching tags and types from selected options
+  // Collect all matching tags, types, and exact product IDs from selected options
   const matchingTags = new Set<string>();
   const matchingTypes = new Set<string>();
+  const exactProductIds = new Set<string>();
   let maxPrice: number | null = null;
   let minPrice: number | null = null;
 
@@ -291,6 +300,12 @@ async function generateRecommendations(quiz: any, answers: any[], shop: string) 
       const productMatching = JSON.parse(option.productMatching);
       console.log("Parsed productMatching:", productMatching);
 
+      // Prioritize exact product IDs (Advanced Product Matching)
+      if (productMatching.productIds && Array.isArray(productMatching.productIds)) {
+        productMatching.productIds.forEach((id: string) => exactProductIds.add(id));
+        console.log("✅ Added exact product IDs:", productMatching.productIds);
+      }
+
       // Add tags and types to our sets
       if (productMatching.tags) {
         productMatching.tags.forEach((tag: string) => matchingTags.add(tag));
@@ -312,13 +327,103 @@ async function generateRecommendations(quiz: any, answers: any[], shop: string) 
     }
   });
 
+  console.log("Final exactProductIds:", Array.from(exactProductIds));
   console.log("Final matchingTags:", Array.from(matchingTags));
   console.log("Final matchingTypes:", Array.from(matchingTypes));
   console.log("Final price filter:", { minPrice, maxPrice });
 
+  // If exact product IDs are specified, query those first
+  if (exactProductIds.size > 0) {
+    console.log("🎯 Using exact product ID matching (Advanced Product Matching)");
+    try {
+      const { admin } = await unauthenticated.admin(shop);
+      
+      // Query by exact product IDs
+      const productIdQuery = Array.from(exactProductIds)
+        .map(id => `id:${id}`)
+        .join(" OR ");
+
+      const response = await admin.graphql(
+        `#graphql
+          query getExactProducts($query: String!) {
+            products(first: 10, query: $query) {
+              edges {
+                node {
+                  id
+                  title
+                  handle
+                  description
+                  descriptionHtml
+                  onlineStoreUrl
+                  featuredImage {
+                    url
+                  }
+                  images(first: 5) {
+                    edges {
+                      node {
+                        url
+                        altText
+                      }
+                    }
+                  }
+                  priceRangeV2 {
+                    minVariantPrice {
+                      amount
+                      currencyCode
+                    }
+                  }
+                  status
+                  variants(first: 1) {
+                    edges {
+                      node {
+                        id
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        `,
+        {
+          variables: { query: productIdQuery },
+        }
+      );
+
+      const productsData = await response.json();
+      const exactProducts = productsData.data?.products?.edges
+        ?.map((edge: any) => edge.node)
+        .filter((product: any) => product.status === 'ACTIVE') || [];
+
+      if (exactProducts.length > 0) {
+        console.log(`✅ Found ${exactProducts.length} exact product matches`);
+        return exactProducts.map((product: any) => ({
+          id: product.id,
+          variantId: product.variants?.edges?.[0]?.node?.id || null,
+          title: product.title,
+          handle: product.handle,
+          description: product.description || '',
+          descriptionHtml: product.descriptionHtml || '',
+          price: `${product.priceRangeV2.minVariantPrice.currencyCode} ${parseFloat(
+            product.priceRangeV2.minVariantPrice.amount
+          ).toFixed(2)}`,
+          imageUrl: product.featuredImage?.url || "https://via.placeholder.com/200",
+          images: product.images?.edges?.map((edge: any) => ({
+            url: edge.node.url,
+            altText: edge.node.altText || product.title,
+          })) || [],
+          url: product.onlineStoreUrl || `/products/${product.handle}`,
+        }));
+      }
+    } catch (error) {
+      console.error("❌ Error fetching exact products:", error);
+      // Fall through to tag/type matching
+    }
+  }
+
   // Query Shopify for products matching the collected criteria
   try {
-    // FIXME: Use unauthenticated.admin() with offline session token for public API
+    // Using unauthenticated.admin() for public API access
     // This is a PUBLIC endpoint called from storefront, not an authenticated admin session
     const { admin } = await unauthenticated.admin(shop);
 
@@ -367,9 +472,19 @@ async function generateRecommendations(quiz: any, answers: any[], shop: string) 
                 id
                 title
                 handle
+                description
+                descriptionHtml
                 onlineStoreUrl
                 featuredImage {
                   url
+                }
+                images(first: 5) {
+                  edges {
+                    node {
+                      url
+                      altText
+                    }
+                  }
                 }
                 priceRangeV2 {
                   minVariantPrice {
@@ -442,82 +557,117 @@ async function generateRecommendations(quiz: any, answers: any[], shop: string) 
 
     // If we have matching products, return them
     if (availableProducts.length > 0) {
-      // Return top 3-6 products with variant ID for cart functionality
+      // Return top 3-6 products with full details for hover interactions
       return availableProducts.slice(0, 6).map((product: any) => ({
         id: product.id,
         variantId: product.variants?.edges?.[0]?.node?.id || null,
         title: product.title,
         handle: product.handle,
+        description: product.description || '',
+        descriptionHtml: product.descriptionHtml || '',
         price: `${product.priceRangeV2.minVariantPrice.currencyCode} ${parseFloat(
           product.priceRangeV2.minVariantPrice.amount
         ).toFixed(2)}`,
         imageUrl: product.featuredImage?.url || "https://via.placeholder.com/200",
+        images: product.images?.edges?.map((edge: any) => ({
+          url: edge.node.url,
+          altText: edge.node.altText || product.title,
+        })) || [],
         url: product.onlineStoreUrl || `/products/${product.handle}`,
       }));
     }
 
-    // Fallback: If no products match, get some popular products
-    // TODO: Define what "popular" means (most sold, highest rated, etc.)
-    const fallbackResponse = await admin.graphql(
-      `#graphql
-        query getFallbackProducts {
-          products(first: 6, sortKey: BEST_SELLING) {
-            edges {
-              node {
-                id
-                title
-                handle
-                onlineStoreUrl
-                featuredImage {
-                  url
-                }
-                priceRangeV2 {
-                  minVariantPrice {
-                    amount
-                    currencyCode
+    console.log("⚠️ No products matched criteria, fetching fallback products");
+
+    // Fallback: If no products match, get some products without strict filtering
+    // Remove price filter and try with just tags/types, or get any active products
+    try {
+      const fallbackResponse = await admin.graphql(
+        `#graphql
+          query getFallbackProducts {
+            products(first: 6, query: "status:active") {
+              edges {
+                node {
+                  id
+                  title
+                  handle
+                  description
+                  descriptionHtml
+                  onlineStoreUrl
+                  featuredImage {
+                    url
                   }
-                }
-                status
-                variants(first: 1) {
-                  edges {
-                    node {
-                      id
+                  images(first: 5) {
+                    edges {
+                      node {
+                        url
+                        altText
+                      }
+                    }
+                  }
+                  priceRangeV2 {
+                    minVariantPrice {
+                      amount
+                      currencyCode
+                    }
+                  }
+                  status
+                  variants(first: 1) {
+                    edges {
+                      node {
+                        id
+                      }
                     }
                   }
                 }
               }
             }
           }
-        }
-      `
-    );
+        `
+      );
 
-    const fallbackData = await fallbackResponse.json();
-    const fallbackProducts =
-      fallbackData.data?.products?.edges
-        ?.map((edge: any) => edge.node)
-        .filter((product: any) => product.status === 'ACTIVE') || [];
+      const fallbackData = await fallbackResponse.json();
+      
+      if (fallbackData.errors) {
+        console.error("GraphQL errors in fallback:", fallbackData.errors);
+        throw new Error("Failed to fetch fallback products");
+      }
 
-    if (fallbackProducts.length > 0) {
-      return fallbackProducts.map((product: any) => ({
-        id: product.id,
-        variantId: product.variants?.edges?.[0]?.node?.id || null,
-        title: product.title,
-        handle: product.handle,
-        price: `${product.priceRangeV2.minVariantPrice.currencyCode} ${parseFloat(
-          product.priceRangeV2.minVariantPrice.amount
-        ).toFixed(2)}`,
-        imageUrl: product.featuredImage?.url || "https://via.placeholder.com/200",
-        url: product.onlineStoreUrl || `/products/${product.handle}`,
-      }));
+      const fallbackProducts =
+        fallbackData.data?.products?.edges
+          ?.map((edge: any) => edge.node)
+          .filter((product: any) => product.status === 'ACTIVE') || [];
+
+      if (fallbackProducts.length > 0) {
+        console.log(`✅ Returning ${fallbackProducts.length} fallback products`);
+        return fallbackProducts.map((product: any) => ({
+          id: product.id,
+          variantId: product.variants?.edges?.[0]?.node?.id || null,
+          title: product.title,
+          handle: product.handle,
+          description: product.description || '',
+          descriptionHtml: product.descriptionHtml || '',
+          price: `${product.priceRangeV2.minVariantPrice.currencyCode} ${parseFloat(
+            product.priceRangeV2.minVariantPrice.amount
+          ).toFixed(2)}`,
+          imageUrl: product.featuredImage?.url || "https://via.placeholder.com/200",
+          images: product.images?.edges?.map((edge: any) => ({
+            url: edge.node.url,
+            altText: edge.node.altText || product.title,
+          })) || [],
+          url: product.onlineStoreUrl || `/products/${product.handle}`,
+        }));
+      }
+    } catch (fallbackError) {
+      console.error("❌ Fallback query failed:", fallbackError);
+      // Continue to return empty array below
     }
 
-    // Last resort: return empty array
-    // TODO: Show a friendly message to merchant to add products
+    // Last resort: return empty array with helpful message
+    console.log("⚠️ No products available to recommend - returning empty array");
     return [];
   } catch (error) {
     console.error("Error fetching product recommendations:", error);
-    // TODO: Log this error to monitoring service
     // Return empty array instead of crashing
     return [];
   }

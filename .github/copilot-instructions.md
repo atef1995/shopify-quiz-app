@@ -183,6 +183,7 @@ await prisma.quizAnalytics.update({ data: { completions: { increment: 1 } } });
 6. Add TODO/BUG/FIXME comments for future maintenance
 7. Explain WHY in comments, not WHAT (code shows what)
 8. use security best practices
+9. write production level code
 
 ## Testing Approach
 - **No formal test suite yet** - focus on manual testing in Shopify admin
