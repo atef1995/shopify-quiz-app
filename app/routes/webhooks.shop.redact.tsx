@@ -1,6 +1,7 @@
 import type { ActionFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
+import crypto from "crypto";
 
 /**
  * GDPR Webhook: shop/redact
@@ -10,12 +11,56 @@ import prisma from "../db.server";
  * For this app: Delete all quizzes, results, analytics, subscriptions
  */
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { shop, payload } = await authenticate.webhook(request);
+  // Get HMAC header
+  const hmacHeader = request.headers.get('x-shopify-hmac-sha256');
+  
+  if (!hmacHeader) {
+    console.error('[GDPR Shop Redact] Missing HMAC header');
+    return new Response("Bad Request", { status: 400 });
+  }
 
-  console.log(`[GDPR Shop Redact] Starting data deletion for shop: ${shop}`);
-  console.log(`[GDPR Shop Redact] Payload:`, payload);
+  // Get raw body as text (this is critical for HMAC verification)
+  const rawBody = await request.text();
+  
+  // Manual HMAC verification using client secret
+  const clientSecret = process.env.SHOPIFY_API_SECRET || "";
+  const calculatedHmac = crypto
+    .createHmac('sha256', clientSecret)
+    .update(rawBody, 'utf8')
+    .digest('base64');
+  
+  // Timing-safe comparison
+  let hmacValid = false;
+  try {
+    hmacValid = crypto.timingSafeEqual(
+      Buffer.from(calculatedHmac, 'base64'),
+      Buffer.from(hmacHeader, 'base64')
+    );
+  } catch (error) {
+    console.error('[GDPR Shop Redact] HMAC comparison error:', error);
+    return new Response("Bad Request", { status: 400 });
+  }
+
+  if (!hmacValid) {
+    console.error('[GDPR Shop Redact] Invalid HMAC signature');
+    return new Response("Bad Request", { status: 400 });
+  }
+
+  // HMAC is valid, now use authenticate.webhook for additional processing
+  // Create new request with the raw body
+  const clonedRequest = new Request(request.url, {
+    method: request.method,
+    headers: request.headers,
+    body: rawBody,
+  });
 
   try {
+    const { shop, payload } = await authenticate.webhook(clonedRequest);
+
+    console.log(`[GDPR Shop Redact] Starting data deletion for shop: ${shop}`);
+    console.log(`[GDPR Shop Redact] Payload:`, payload);
+
+    // Track what we're deleting for audit log
     // Track what we're deleting for audit log
     const shopData = {
       quizzes: 0,
@@ -75,10 +120,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       headers: { "Content-Type": "application/json" },
     });
   } catch (error) {
-    console.error(`[GDPR Shop Redact Error] Failed to delete data for ${shop}:`, error);
+    console.error(`[GDPR Shop Redact Error] Failed to delete data:`, error);
     return new Response(JSON.stringify({
       error: "Failed to redact shop data",
-      shop: shop,
       message: error instanceof Error ? error.message : "Unknown error",
     }), {
       status: 500,

@@ -182,7 +182,11 @@ server {
 EOF
 
 sudo ln -sf /etc/nginx/sites-available/shopify-quiz-app /etc/nginx/sites-enabled/
-sudo nginx -t && sudo systemctl reload nginx
+sudo nginx -t
+# Ensure Nginx is started before reloading
+sudo systemctl start nginx 2>/dev/null || true
+sudo systemctl enable nginx
+sudo systemctl reload nginx
 echo -e "${GREEN}✓ Nginx configured${NC}"
 
 # Step 10: Setup SSL

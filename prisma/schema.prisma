@@ -6,9 +6,9 @@ generator client {
 }
 
 // PostgreSQL configuration for production deployment
-// Fly.io automatically provides DATABASE_URL environment variable
+// SQLite for local development
 datasource db {
-  provider = "postgresql"
+  provider = "sqlite"
   url      = env("DATABASE_URL")
 }
 

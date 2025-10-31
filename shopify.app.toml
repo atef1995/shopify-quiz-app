@@ -1,15 +1,15 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
 client_id = "ccb95c69fbef7812f6a59699510890a1"
-name = "Product Quiz Builder"
-application_url = "https://product-quiz-builder.fly.dev"
+name = "QuizCraft"
+application_url = "https://quiz-builder.duckdns.org"
 embedded = true
 
 [build]
 automatically_update_urls_on_dev = true
 
 [webhooks]
-api_version = "2026-01"
+api_version = "2025-10"
 
   [[webhooks.subscriptions]]
   topics = [ "app/uninstalled" ]
@@ -19,17 +19,16 @@ api_version = "2026-01"
   topics = [ "app/scopes_update" ]
   uri = "/webhooks/app/scopes_update"
 
-  # GDPR webhooks - required for App Store submission
   [[webhooks.subscriptions]]
-  topics = [ "customers/data_request" ]
+  compliance_topics = ["customers/data_request"]
   uri = "/webhooks/customers/data_request"
 
   [[webhooks.subscriptions]]
-  topics = [ "customers/redact" ]
+  compliance_topics = ["customers/redact"]
   uri = "/webhooks/customers/redact"
 
   [[webhooks.subscriptions]]
-  topics = [ "shop/redact" ]
+  compliance_topics = ["shop/redact"]
   uri = "/webhooks/shop/redact"
 
 [access_scopes]
@@ -38,14 +37,14 @@ scopes = "write_products,read_products,read_customers,write_customers"
 
 [auth]
 redirect_urls = [ 
-  "https://product-quiz-builder.fly.dev/auth/login",
-  "https://product-quiz-builder.fly.dev/auth/callback",
-  "https://product-quiz-builder.fly.dev/api/auth"
+  "https://quiz-builder.duckdns.org/auth/login",
+  "https://quiz-builder.duckdns.org/auth/callback",
+  "https://quiz-builder.duckdns.org/api/auth"
 ]
 
 [app_proxy]
 # App proxy routes storefront requests to app
 # Storefront: /apps/quiz-app/* → App: https://your-app.com/*
-url = "https://product-quiz-builder.fly.dev"
+url = "https://quiz-builder.duckdns.org"
 subpath = "quiz-app"
 prefix = "apps"
