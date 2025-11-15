@@ -3,7 +3,7 @@ import type {
   LoaderFunctionArgs,
   HeadersFunction,
 } from "react-router";
-import { redirect, Form, useNavigation } from "react-router";
+import { redirect, Form, useNavigation, Link } from "react-router";
 import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import prisma from "../db.server";
@@ -188,11 +188,11 @@ export default function NewQuiz() {
                 >
                   Create Quiz
                 </s-button>
-                <a href="/app/quizzes">
+                <Link to="/app/quizzes">
                   <s-button type="button" variant="secondary">
                     Cancel
                   </s-button>
-                </a>
+                </Link>
               </s-stack>
             </s-stack>
           </Form>

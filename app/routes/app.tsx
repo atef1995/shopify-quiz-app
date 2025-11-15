@@ -6,9 +6,23 @@ import { AppProvider } from "@shopify/shopify-app-react-router/react";
 import { authenticate } from "../shopify.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
+  const url = new URL(request.url);
+
+  // Debug logging to understand what parameters we're receiving
+  console.log("[APP] /app route accessed");
+  console.log("[APP] URL:", url.href);
+  console.log("[APP] Params:", {
+    shop: url.searchParams.get("shop"),
+    host: url.searchParams.get("host"),
+    embedded: url.searchParams.get("embedded"),
+    hmac: url.searchParams.get("hmac") ? "present" : "missing"
+  });
+
+  // This will either succeed (if session exists) or throw OAuth redirect
+  // If 'host' parameter exists, Shopify library should use App Bridge for OAuth
   await authenticate.admin(request);
 
-  return { 
+  return {
     apiKey: process.env.SHOPIFY_API_KEY || "",
   };
 };

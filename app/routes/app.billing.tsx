@@ -75,25 +75,28 @@ function getTierFeatures(tier: keyof typeof TIER_LIMITS) {
 export default function Billing() {
   const { usage, tiers } = useLoaderData<typeof loader>();
   const fetcher = useFetcher();
+  const navigate = useNavigate();
   const shopify = useAppBridge();
 
   const isNearLimit = usage.percentUsed >= 80;
   const isOverLimit = usage.percentUsed >= 100;
 
   // Show toast on billing status return
+  // NOTE: Uses React Router navigate instead of window.history for proper embedded app navigation
   useEffect(() => {
     const url = new URL(window.location.href);
     const status = url.searchParams.get("status");
-    
+
     if (status === "success") {
       shopify.toast.show("Subscription updated successfully!");
-      // Clean URL
-      window.history.replaceState({}, "", "/app/billing");
+      // Clean URL using React Router navigate with replace option
+      navigate("/app/billing", { replace: true });
     } else if (status === "error") {
       shopify.toast.show("Failed to update subscription", { isError: true });
-      window.history.replaceState({}, "", "/app/billing");
+      // Clean URL using React Router navigate with replace option
+      navigate("/app/billing", { replace: true });
     }
-  }, [shopify]);
+  }, [shopify, navigate]);
 
   const handleUpgrade = (tier: string) => {
     // Use fetcher to submit to billing upgrade route

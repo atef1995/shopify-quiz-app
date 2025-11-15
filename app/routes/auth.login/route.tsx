@@ -9,7 +9,10 @@ import { loginErrorMessage } from "./error.server";
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const errors = loginErrorMessage(await login(request));
 
-  return { errors };
+  return {
+    errors,
+    apiKey: process.env.SHOPIFY_API_KEY || "",
+  };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -17,6 +20,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   return {
     errors,
+    apiKey: process.env.SHOPIFY_API_KEY || "",
   };
 };
 
@@ -24,10 +28,17 @@ export default function Auth() {
   const loaderData = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const [shop, setShop] = useState("");
-  const { errors } = actionData || loaderData;
+  const { errors, apiKey } = actionData || loaderData;
+
+  // Check if we have a host parameter (indicates embedded context)
+  // If embedded, use App Bridge for OAuth to avoid iframe redirect issues
+  const url = typeof window !== 'undefined' ? new URL(window.location.href) : null;
+  const isEmbedded = url ? (url.searchParams.get('host') !== null || url.searchParams.get('embedded') === '1') : false;
+
+  console.log('[AUTH LOGIN] Rendering auth form', { isEmbedded, hasErrors: !!errors.shop });
 
   return (
-    <AppProvider embedded={false}>
+    <AppProvider embedded={isEmbedded} apiKey={apiKey}>
       <s-page>
         <Form method="post">
         <s-section heading="Log in">

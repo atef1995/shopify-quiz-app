@@ -13,7 +13,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   await authenticate.admin(request);
 
   // Redirect to quiz dashboard
-  return redirect("/app/quizzes");
+  // IMPORTANT: Preserve query parameters (shop, host, embedded) for embedded app session
+  const url = new URL(request.url);
+  const params = url.searchParams.toString();
+  const redirectUrl = params ? `/app/quizzes?${params}` : "/app/quizzes";
+
+  console.log("[APP INDEX] Redirecting to quizzes with params:", params || "none");
+  return redirect(redirectUrl);
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
