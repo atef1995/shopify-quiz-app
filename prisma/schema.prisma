@@ -151,12 +151,16 @@ model Subscription {
   currentPeriodStart       DateTime @default(now())
   currentPeriodEnd         DateTime
 
-  // Shopify billing details
-  shopifySubscriptionId String?
-  status                String  @default("active") // active, cancelled, expired
+  // Shopify billing details - tracks actual Shopify recurring application charges
+  shopifySubscriptionId String? // GraphQL ID from appSubscriptionCreate (e.g., gid://shopify/AppSubscription/123)
+  chargeId              String? // Numeric ID for REST API compatibility
+  confirmationUrl       String? // URL merchant visits to approve charge
+  returnUrl             String? // URL to redirect after approval
+  status                String  @default("active") // active, pending, cancelled, expired
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([shop])
+  @@index([shopifySubscriptionId])
 }

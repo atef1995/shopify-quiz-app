@@ -1,10 +1,79 @@
-import type { LoaderFunctionArgs, HeadersFunction } from "react-router";
+import type {
+  LoaderFunctionArgs,
+  HeadersFunction,
+  ActionFunctionArgs,
+} from "react-router";
 import { useLoaderData, useNavigate, useFetcher } from "react-router";
 import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
-import { getUsageStats, TIER_LIMITS, type SubscriptionTier } from "../lib/billing.server";
-import { useEffect } from "react";
+import {
+  getUsageStats,
+  TIER_LIMITS,
+  type SubscriptionTier,
+} from "../lib/billing.server";
+import { useEffect, useState } from "react";
 import { useAppBridge } from "@shopify/app-bridge-react";
+import prisma from "../db.server";
+import { cancelAppSubscription } from "../lib/billing-api.server";
+
+/**
+ * Action handler for subscription management (cancel/downgrade)
+ */
+export const action = async ({ request }: ActionFunctionArgs) => {
+  const { admin, session } = await authenticate.admin(request);
+
+  const formData = await request.formData();
+  const actionType = formData.get("action");
+
+  if (actionType === "cancel") {
+    try {
+      // Fetch current subscription
+      const subscription = await prisma.subscription.findUnique({
+        where: { shop: session.shop },
+      });
+
+      if (!subscription || !subscription.shopifySubscriptionId) {
+        return Response.json(
+          { error: "No active subscription found" },
+          { status: 404 },
+        );
+      }
+
+      // Cancel in Shopify (with prorating)
+      await cancelAppSubscription(
+        admin,
+        subscription.shopifySubscriptionId,
+        true, // prorate refund
+      );
+
+      // Downgrade to free tier in database
+      await prisma.subscription.update({
+        where: { shop: session.shop },
+        data: {
+          tier: "free",
+          status: "cancelled",
+          shopifySubscriptionId: null,
+          updatedAt: new Date(),
+        },
+      });
+
+      return Response.json({ success: true });
+    } catch (error) {
+      console.error("Failed to cancel subscription:", error);
+      return Response.json(
+        {
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to cancel subscription",
+        },
+        { status: 500 },
+      );
+    }
+  }
+
+  return Response.json({ error: "Invalid action" }, { status: 400 });
+};
 
 /**
  * Loader to fetch billing and usage information
@@ -77,6 +146,7 @@ export default function Billing() {
   const fetcher = useFetcher();
   const navigate = useNavigate();
   const shopify = useAppBridge();
+  const [showCancelModal, setShowCancelModal] = useState(false);
 
   const isNearLimit = usage.percentUsed >= 80;
   const isOverLimit = usage.percentUsed >= 100;
@@ -102,12 +172,21 @@ export default function Billing() {
     // Use fetcher to submit to billing upgrade route
     fetcher.submit(
       { tier },
-      { method: "post", action: "/app/billing/upgrade" }
+      { method: "post", action: "/app/billing/upgrade" },
     );
   };
 
+  const handleCancel = () => {
+    setShowCancelModal(true);
+  };
+
+  const confirmCancel = () => {
+    fetcher.submit({ action: "cancel" }, { method: "post" });
+    setShowCancelModal(false);
+  };
+
   return (
-    <s-page heading="Billing & Usage">
+    <s-page heading="Billing & Usage" max-width="full">
       {/* Current Usage */}
       <s-section heading="Current Usage">
         <s-stack direction="block" gap="base">
@@ -136,36 +215,22 @@ export default function Billing() {
             background="surface"
           >
             <s-stack direction="block" gap="base">
-              <s-stack
-                direction="inline"
-                gap="base"
-                align="space-between"
-              >
+              <s-stack direction="inline" gap="base" align="space-between">
                 <s-stack direction="block" gap="tight">
-                  <s-text variant="heading-lg">
-                    {usage.tierName} Plan
-                  </s-text>
+                  <s-text variant="heading-lg">{usage.tierName} Plan</s-text>
                   <s-text variant="body-sm" color="subdued">
                     Current billing period ends in {usage.daysUntilReset} days
                   </s-text>
                 </s-stack>
                 <s-badge
-                  variant={
-                    usage.status === "active"
-                      ? "success"
-                      : "critical"
-                  }
+                  variant={usage.status === "active" ? "success" : "critical"}
                 >
                   {usage.status}
                 </s-badge>
               </s-stack>
 
               <s-stack direction="block" gap="tight">
-                <s-stack
-                  direction="inline"
-                  gap="base"
-                  align="space-between"
-                >
+                <s-stack direction="inline" gap="base" align="space-between">
                   <s-text variant="body-sm">Quiz Completions</s-text>
                   <s-text variant="body-sm">
                     {usage.currentUsage} /{" "}
@@ -259,8 +324,8 @@ export default function Billing() {
                   </s-stack>
 
                   {!tier.isCurrent && tier.key !== "free" && (
-                    <s-button 
-                      variant="primary" 
+                    <s-button
+                      variant="primary"
                       fullWidth
                       onClick={() => handleUpgrade(tier.key)}
                       loading={fetcher.state === "submitting"}
@@ -268,11 +333,22 @@ export default function Billing() {
                       Upgrade to {tier.name}
                     </s-button>
                   )}
-                  
+
                   {tier.isCurrent && (
-                    <s-button variant="primary" fullWidth disabled>
-                      Current Plan
-                    </s-button>
+                    <s-stack direction="block" gap="tight">
+                      <s-button variant="primary" fullWidth disabled>
+                        Current Plan
+                      </s-button>
+                      {tier.key !== "free" && (
+                        <s-button
+                          variant="plain"
+                          fullWidth
+                          onClick={handleCancel}
+                        >
+                          Cancel Subscription
+                        </s-button>
+                      )}
+                    </s-stack>
                   )}
                 </s-stack>
               </s-box>
@@ -280,6 +356,40 @@ export default function Billing() {
           </s-grid>
         </s-stack>
       </s-section>
+
+      {/* Cancel Confirmation Modal */}
+      {showCancelModal && (
+        <s-modal
+          open
+          onClose={() => setShowCancelModal(false)}
+          primaryAction={{
+            content: "Cancel Subscription",
+            onAction: confirmCancel,
+            destructive: true,
+          }}
+          secondaryActions={[
+            {
+              content: "Keep Subscription",
+              onAction: () => setShowCancelModal(false),
+            },
+          ]}
+        >
+          <s-box padding="base" style={{ backgroundColor: "white" }}>
+            <s-stack direction="block" gap="base">
+              <s-text variant="heading-md">Cancel Subscription?</s-text>
+              <s-text variant="body-md">
+                Are you sure you want to cancel your subscription? You'll be
+                downgraded to the Free plan and will only be able to process 100
+                quiz completions per month.
+              </s-text>
+              <s-text variant="body-sm" color="subdued">
+                You'll receive a prorated refund for the remaining time in your
+                billing period.
+              </s-text>
+            </s-stack>
+          </s-box>
+        </s-modal>
+      )}
 
       {/* FAQ */}
       <s-section slot="aside" heading="Billing FAQ">
@@ -293,8 +403,7 @@ export default function Billing() {
             <s-stack direction="block" gap="tight">
               <s-text variant="heading-sm">When does my usage reset?</s-text>
               <s-text variant="body-sm" color="subdued">
-                Your usage resets monthly on your subscription anniversary
-                date.
+                Your usage resets monthly on your subscription anniversary date.
               </s-text>
             </s-stack>
           </s-box>
@@ -321,7 +430,9 @@ export default function Billing() {
             background="surface"
           >
             <s-stack direction="block" gap="tight">
-              <s-text variant="heading-sm">What happens if I exceed my limit?</s-text>
+              <s-text variant="heading-sm">
+                What happens if I exceed my limit?
+              </s-text>
               <s-text variant="body-sm" color="subdued">
                 Once you reach your limit, new quiz completions will be blocked
                 until you upgrade or your usage resets.

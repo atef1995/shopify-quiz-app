@@ -75,7 +75,12 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
               try {
                 return JSON.parse(o.productMatching);
               } catch (error) {
-                console.error("Error parsing productMatching in loader:", error, "Data:", o.productMatching);
+                console.error(
+                  "Error parsing productMatching in loader:",
+                  error,
+                  "Data:",
+                  o.productMatching,
+                );
                 return null;
               }
             })()
@@ -267,9 +272,10 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       data: { status },
     });
 
-    const message = status === "active" 
-      ? "Quiz activated! It's now live on your storefront." 
-      : "Quiz set to draft. It's no longer visible to customers.";
+    const message =
+      status === "active"
+        ? "Quiz activated! It's now live on your storefront."
+        : "Quiz set to draft. It's no longer visible to customers.";
 
     return { success: true, message };
   }
@@ -313,16 +319,18 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
         `,
         {
           variables: { first: 50 },
-        }
+        },
       );
 
       const productsData = await productsResponse.json();
-      const products = productsData.data?.products?.edges?.map((edge: any) => edge.node) || [];
+      const products =
+        productsData.data?.products?.edges?.map((edge: any) => edge.node) || [];
 
       if (products.length === 0) {
         return {
           success: false,
-          message: "No products found. Please add products to your store first.",
+          message:
+            "No products found. Please add products to your store first.",
         };
       }
 
@@ -347,24 +355,29 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
             Array.from(productTags),
             Array.from(productTypes),
             "professional",
-            quiz.title
+            quiz.title,
           );
           generationMethod = "AI";
           console.log(`✅ AI generated ${questions.length} questions`);
         } catch (aiError: any) {
-          console.error("❌ AI generation failed, falling back to rule-based:", aiError.message);
+          console.error(
+            "❌ AI generation failed, falling back to rule-based:",
+            aiError.message,
+          );
           questions = generateBasicQuestions(
             products,
             Array.from(productTags),
-            Array.from(productTypes)
+            Array.from(productTypes),
           );
         }
       } else {
-        console.log("⚠️ OpenAI API key not configured, using rule-based generation");
+        console.log(
+          "⚠️ OpenAI API key not configured, using rule-based generation",
+        );
         questions = generateBasicQuestions(
           products,
           Array.from(productTags),
-          Array.from(productTypes)
+          Array.from(productTypes),
         );
       }
 
@@ -377,9 +390,10 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
             quizId,
             text: questionData.text,
             type: questionData.type || "multiple_choice",
-            order: questionData.order !== undefined ? questionData.order : i + 1,
+            order:
+              questionData.order !== undefined ? questionData.order : i + 1,
             // Store conditional rules for smart question flow
-            conditionalRules: questionData.conditionalRules 
+            conditionalRules: questionData.conditionalRules
               ? JSON.stringify(questionData.conditionalRules)
               : null,
           },
@@ -396,9 +410,11 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
           };
 
           // Add budget constraints for conditional logic
-          if (option.budgetMin !== undefined) productMatching.budgetMin = option.budgetMin;
-          if (option.budgetMax !== undefined) productMatching.budgetMax = option.budgetMax;
-          
+          if (option.budgetMin !== undefined)
+            productMatching.budgetMin = option.budgetMin;
+          if (option.budgetMax !== undefined)
+            productMatching.budgetMax = option.budgetMax;
+
           // Add price range for filtering
           if (option.priceRange) productMatching.priceRange = option.priceRange;
 
@@ -488,7 +504,7 @@ export default function EditQuiz() {
   const [searchDebounceTimeout, setSearchDebounceTimeout] = useState<{
     [key: string]: NodeJS.Timeout | null;
   }>({});
-  
+
   // Track selected product IDs per question for advanced matching
   const [selectedProductIds, setSelectedProductIds] = useState<{
     [key: string]: string[];
@@ -505,6 +521,53 @@ export default function EditQuiz() {
     {},
   );
   const [currentStatus, setCurrentStatus] = useState(quiz.status);
+
+  // Collapsible questions state - all expanded by default
+  const [expandedQuestions, setExpandedQuestions] = useState<{
+    [key: string]: boolean;
+  }>(() => {
+    const initial: { [key: string]: boolean } = {};
+    questions.forEach((q) => {
+      initial[q.id] = true; // Start with all questions expanded
+    });
+    return initial;
+  });
+
+  const toggleQuestion = (questionId: string) => {
+    setExpandedQuestions((prev) => ({
+      ...prev,
+      [questionId]: !prev[questionId],
+    }));
+  };
+
+  const expandAllQuestions = () => {
+    const expanded: { [key: string]: boolean } = {};
+    questions.forEach((q) => {
+      expanded[q.id] = true;
+    });
+    setExpandedQuestions(expanded);
+  };
+
+  const collapseAllQuestions = () => {
+    const collapsed: { [key: string]: boolean } = {};
+    questions.forEach((q) => {
+      collapsed[q.id] = false;
+    });
+    setExpandedQuestions(collapsed);
+  };
+
+  // Confirmation modal state
+  const [confirmModal, setConfirmModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    onConfirm: () => void;
+  }>({
+    isOpen: false,
+    title: "",
+    message: "",
+    onConfirm: () => {},
+  });
 
   // Cleanup debounce timeouts on unmount
   useEffect(() => {
@@ -576,12 +639,21 @@ export default function EditQuiz() {
   };
 
   const handleDeleteQuestion = (questionId: string) => {
-    if (confirm("Are you sure you want to delete this question?")) {
-      const formData = new FormData();
-      formData.append("action", "deleteQuestion");
-      formData.append("questionId", questionId);
-      fetcher.submit(formData, { method: "POST" });
-    }
+    const question = questions.find((q) => q.id === questionId);
+    const questionText = question?.text || "this question";
+
+    setConfirmModal({
+      isOpen: true,
+      title: "Delete Question",
+      message: `Are you sure you want to delete "${questionText}"? This action cannot be undone and will also delete all options associated with this question.`,
+      onConfirm: () => {
+        const formData = new FormData();
+        formData.append("action", "deleteQuestion");
+        formData.append("questionId", questionId);
+        fetcher.submit(formData, { method: "POST" });
+        setConfirmModal({ ...confirmModal, isOpen: false });
+      },
+    });
   };
 
   const handleStatusChange = (status: string) => {
@@ -609,6 +681,19 @@ export default function EditQuiz() {
       return;
     }
 
+    // Validate product matching - require at least tags OR types
+    const hasTags = tags && tags.trim().length > 0;
+    const hasTypes = types && types.trim().length > 0;
+    const hasProductIds = productIds.length > 0;
+
+    if (!hasTags && !hasTypes && !hasProductIds) {
+      shopify.toast.show(
+        "Please add at least one Product Tag or Product Type to enable recommendations",
+        { isError: true, duration: 5000 },
+      );
+      return;
+    }
+
     const formData = new FormData();
     formData.append("action", "addOption");
     formData.append("questionId", questionId);
@@ -629,12 +714,28 @@ export default function EditQuiz() {
   };
 
   const handleDeleteOption = (optionId: string) => {
-    if (confirm("Are you sure you want to delete this option?")) {
-      const formData = new FormData();
-      formData.append("action", "deleteOption");
-      formData.append("optionId", optionId);
-      fetcher.submit(formData, { method: "POST" });
+    // Find the option text to show in confirmation
+    let optionText = "this option";
+    for (const question of questions) {
+      const option = question.options.find((o) => o.id === optionId);
+      if (option) {
+        optionText = option.text;
+        break;
+      }
     }
+
+    setConfirmModal({
+      isOpen: true,
+      title: "Delete Option",
+      message: `Are you sure you want to delete the option "${optionText}"? This action cannot be undone.`,
+      onConfirm: () => {
+        const formData = new FormData();
+        formData.append("action", "deleteOption");
+        formData.append("optionId", optionId);
+        fetcher.submit(formData, { method: "POST" });
+        setConfirmModal({ ...confirmModal, isOpen: false });
+      },
+    });
   };
 
   const searchProducts = async (questionId: string, query: string) => {
@@ -699,7 +800,7 @@ export default function EditQuiz() {
 
   const handleAdvancedProductMatching = (questionId: string) => {
     const selected = selectedProducts[questionId] || [];
-    
+
     // Store the selected product IDs for this question
     setSelectedProductIds((prev) => ({
       ...prev,
@@ -707,7 +808,9 @@ export default function EditQuiz() {
     }));
 
     setShowProductBrowser((prev) => ({ ...prev, [questionId]: false }));
-    shopify.toast.show(`${selected.length} product(s) selected for this option`);
+    shopify.toast.show(
+      `${selected.length} product(s) selected for this option`,
+    );
   };
 
   const addTagToOption = (questionId: string, tag: string) => {
@@ -757,815 +860,1133 @@ export default function EditQuiz() {
       <s-page
         heading={quiz.title}
         backAction={{ onAction: () => navigate("/app/quizzes") }}
+        max-width="full"
       >
-      <s-button
-        slot="primary-action"
-        variant="primary"
-        onClick={handleUpdateQuiz}
-      >
-        Save Changes
-      </s-button>
+        <s-button
+          slot="primary-action"
+          variant="primary"
+          onClick={handleUpdateQuiz}
+          loading={fetcher.state !== "idle"}
+          disabled={fetcher.state !== "idle"}
+        >
+          {fetcher.state !== "idle" ? "Saving..." : "Save Changes"}
+        </s-button>
 
-      {/* Quiz Status Banner */}
-      <s-banner>
-        <s-stack direction="inline" gap="base" align="space-between">
-          <s-stack direction="inline" gap="base" align="center">
-            <s-text>
-              <strong>Quiz Status:</strong>
-            </s-text>
-            <s-badge
-              variant={currentStatus === "active" ? "success" : "warning"}
+        {/* Quiz Status Banner */}
+        <s-banner>
+          <s-stack direction="inline" gap="base" align="space-between">
+            <s-stack direction="inline" gap="base" align="center">
+              <s-text>
+                <strong>Quiz Status:</strong>
+              </s-text>
+              <s-badge
+                variant={currentStatus === "active" ? "success" : "warning"}
+              >
+                {currentStatus === "active" ? "🟢 Active" : "🟡 Draft"}
+              </s-badge>
+              {currentStatus === "active" && (
+                <s-text color="subdued">
+                  This quiz is live and visible to customers on your storefront
+                </s-text>
+              )}
+              {currentStatus === "draft" && (
+                <s-text color="subdued">
+                  This quiz is not visible to customers. Activate it to make it
+                  live.
+                </s-text>
+              )}
+            </s-stack>
+            <s-button
+              variant={currentStatus === "active" ? "secondary" : "primary"}
+              onClick={() => {
+                const newStatus =
+                  currentStatus === "active" ? "draft" : "active";
+                setCurrentStatus(newStatus); // Optimistic update
+                handleStatusChange(newStatus);
+              }}
+              disabled={fetcher.state !== "idle"}
             >
-              {currentStatus === "active" ? "🟢 Active" : "🟡 Draft"}
-            </s-badge>
-            {currentStatus === "active" && (
-              <s-text color="subdued">
-                This quiz is live and visible to customers on your storefront
-              </s-text>
-            )}
-            {currentStatus === "draft" && (
-              <s-text color="subdued">
-                This quiz is not visible to customers. Activate it to make it live.
-              </s-text>
-            )}
+              {fetcher.state !== "idle"
+                ? "Updating..."
+                : currentStatus === "active"
+                  ? "Set to Draft"
+                  : "Activate Quiz"}
+            </s-button>
           </s-stack>
-          <s-button
-            variant={currentStatus === "active" ? "secondary" : "primary"}
-            onClick={() => {
-              const newStatus = currentStatus === "active" ? "draft" : "active";
-              setCurrentStatus(newStatus); // Optimistic update
-              handleStatusChange(newStatus);
-            }}
-            disabled={fetcher.state !== "idle"}
-          >
-            {fetcher.state !== "idle" ? "Updating..." : currentStatus === "active" ? "Set to Draft" : "Activate Quiz"}
-          </s-button>
-        </s-stack>
-      </s-banner>
+        </s-banner>
 
-      {/* Quiz Basic Info */}
-      <s-section heading="Quiz Details">
-        <s-stack direction="block" gap="base">
-          <s-text-field
-            label="Quiz Title"
-            value={title}
-            onChange={(e) => setTitle((e.target as HTMLInputElement).value)}
-          />
-          <s-text-field
-            label="Quiz Description"
-            value={description}
-            onChange={(e) =>
-              setDescription((e.target as HTMLInputElement).value)
-            }
-            multiline
-            rows={3}
-          />
-        </s-stack>
-      </s-section>
-
-      {/* Questions Section */}
-      <s-section heading="Questions">
-        <s-stack direction="block" gap="base">
-          {questions.length > 0 && (
-            <>
-              {(() => {
-                // Check if any options are missing product matching data
-                const optionsWithoutMatching = questions.flatMap(q => 
-                  q.options.filter(o => {
-                    if (!o.productMatching) return true;
-                    try {
-                      const matching = typeof o.productMatching === 'string' 
-                        ? JSON.parse(o.productMatching) 
-                        : o.productMatching;
-                      return (!matching.tags || matching.tags.length === 0) && 
-                             (!matching.types || matching.types.length === 0);
-                    } catch {
-                      return true;
-                    }
-                  })
-                );
-                
-                if (optionsWithoutMatching.length > 0) {
-                  return (
-                    <s-banner variant="warning">
-                      <s-stack direction="block" gap="tight">
-                        <s-text>
-                          ⚠️ {optionsWithoutMatching.length} option(s) don&apos;t have product matching configured!
-                        </s-text>
-                        <s-text variant="body-sm">
-                          To get personalized product recommendations, add <strong>Tags</strong> and <strong>Product Types</strong> 
-                          to your quiz options. These should match the tags and types of your Shopify products.
-                        </s-text>
-                        <s-text variant="body-sm">
-                          Example: For &quot;Casual Style&quot; option, add tags like &quot;casual, comfortable&quot; and types like &quot;t-shirt, hoodie&quot;
-                        </s-text>
-                      </s-stack>
-                    </s-banner>
-                  );
-                }
-              })()}
-            </>
-          )}
-          {questions.length === 0 ? (
-            <s-banner variant="info">
-              No questions yet. Add your first question below or use AI to
-              generate questions automatically.
-            </s-banner>
-          ) : (
-            <s-stack direction="block" gap="base">
-              {questions.map((question, index) => (
-                <s-box
-                  key={question.id}
-                  padding="base"
-                  borderWidth="base"
-                  borderRadius="base"
-                  background="surface"
+        {/* Quiz Basic Info */}
+        <s-section heading="Quiz Details">
+          <s-stack direction="block" gap="base">
+            <s-text-field
+              label="Quiz Title"
+              value={title}
+              onChange={(e) => setTitle((e.target as HTMLInputElement).value)}
+            />
+            <s-text-field
+              label="Quiz Description"
+              value={description}
+              onChange={(e) =>
+                setDescription((e.target as HTMLInputElement).value)
+              }
+              multiline
+              rows={3}
+            />
+          </s-stack>
+        </s-section>
+        {/* AI Generation */}
+        <s-section heading="AI Tools">
+          <s-stack direction="block" gap="base">
+            <s-box
+              padding="base"
+              borderWidth="base"
+              borderRadius="base"
+              background="surface"
+            >
+              <s-stack direction="block" gap="base">
+                <s-stack direction="inline" gap="base" align="center">
+                  <s-icon source="magic" />
+                  <s-text variant="heading-sm">
+                    Generate Questions with AI
+                  </s-text>
+                </s-stack>
+                <s-text variant="body-sm" color="subdued">
+                  AI will analyze your product catalog and create personalized
+                  quiz questions.
+                </s-text>
+                <s-button
+                  onClick={handleGenerateAI}
+                  variant="primary"
+                  loading={fetcher.state === "submitting"}
                 >
-                  <s-stack direction="block" gap="base">
-                    <s-stack
-                      direction="inline"
-                      gap="base"
-                      align="space-between"
-                    >
-                      <s-stack direction="inline" gap="base" align="center">
-                        <s-badge>Q{index + 1}</s-badge>
-                        <s-text variant="heading-sm">{question.text}</s-text>
-                      </s-stack>
-                      <s-button
-                        variant="tertiary"
-                        size="sm"
-                        onClick={() => handleDeleteQuestion(question.id)}
-                      >
-                        Delete
-                      </s-button>
-                    </s-stack>
+                  Generate with AI
+                </s-button>
+              </s-stack>
+            </s-box>
+          </s-stack>
+        </s-section>
+        {/* Questions Section */}
+        <s-section heading="Questions">
+          <s-stack direction="block" gap="base">
+            {questions.length > 0 && (
+              <>
+                {(() => {
+                  // Check if any options are missing product matching data
+                  const optionsWithoutMatching = questions.flatMap((q) =>
+                    q.options.filter((o) => {
+                      if (!o.productMatching) return true;
+                      try {
+                        const matching =
+                          typeof o.productMatching === "string"
+                            ? JSON.parse(o.productMatching)
+                            : o.productMatching;
+                        return (
+                          (!matching.tags || matching.tags.length === 0) &&
+                          (!matching.types || matching.types.length === 0)
+                        );
+                      } catch {
+                        return true;
+                      }
+                    }),
+                  );
 
-                    <s-text variant="body-sm" color="subdued">
-                      Type: {question.type.replace("_", " ")}
-                    </s-text>
-
-                    {question.options.length > 0 && (
-                      <s-stack direction="block" gap="tight">
-                        <s-text variant="body-sm">Options:</s-text>
+                  if (optionsWithoutMatching.length > 0) {
+                    return (
+                      <s-banner variant="warning">
                         <s-stack direction="block" gap="tight">
-                          {question.options.map((option) => (
-                            <s-box
-                              key={option.id}
-                              padding="auto"
-                              borderWidth="base"
-                              borderRadius="base"
-                              background="subdued"
-                            >
-                              <s-stack
-                                direction="inline"
-                                gap="base"
-                                align="space-between"
-                              >
-                                <s-stack direction="block" gap="tight">
-                                  <s-text>{option.text}</s-text>
-                                  {option.imageUrl && (
-                                    <s-text variant="body-sm" color="subdued">
-                                      Image: {option.imageUrl}
-                                    </s-text>
-                                  )}
-                                  {option.productMatching && (
-                                    <s-text variant="body-sm" color="subdued">
-                                      Matches:{" "}
-                                      {(() => {
-                                        try {
-                                          // Handle both string and object cases
-                                          const matching = typeof option.productMatching === 'string' 
-                                            ? JSON.parse(option.productMatching)
-                                            : option.productMatching;
-                                          
-                                          const parts = [];
-                                          if (matching?.tags?.length)
-                                            parts.push(
-                                              `Tags: ${matching.tags.join(", ")}`,
-                                            );
-                                          if (matching?.types?.length)
-                                            parts.push(
-                                              `Types: ${matching.types.join(", ")}`,
-                                            );
-                                            
-                                          return (
-                                            parts.join(" | ") ||
-                                            "No matching rules"
-                                          );
-                                        } catch (error) {
-                                          console.error("Error parsing productMatching:", error, "Data:", option.productMatching);
-                                          return `Invalid matching data: ${typeof option.productMatching}`;
-                                        }
-                                      })()}
-                                    </s-text>
-                                  )}
-                                </s-stack>
-                                <s-button
-                                  variant="tertiary"
-                                  size="sm"
-                                  onClick={() => handleDeleteOption(option.id)}
-                                >
-                                  Delete
-                                </s-button>
-                              </s-stack>
-                            </s-box>
-                          ))}
+                          <s-text>
+                            ⚠️ {optionsWithoutMatching.length} option(s)
+                            don&apos;t have product matching configured!
+                          </s-text>
+                          <s-text variant="body-sm">
+                            To get personalized product recommendations, add{" "}
+                            <strong>Tags</strong> and{" "}
+                            <strong>Product Types</strong>
+                            to your quiz options. These should match the tags
+                            and types of your Shopify products.
+                          </s-text>
+                          <s-text variant="body-sm">
+                            Example: For &quot;Casual Style&quot; option, add
+                            tags like &quot;casual, comfortable&quot; and types
+                            like &quot;t-shirt, hoodie&quot;
+                          </s-text>
                         </s-stack>
-                      </s-stack>
-                    )}
+                      </s-banner>
+                    );
+                  }
+                })()}
+              </>
+            )}
+            {questions.length === 0 ? (
+              <s-banner variant="info">
+                No questions yet. Add your first question below or use AI to
+                generate questions automatically.
+              </s-banner>
+            ) : (
+              <s-stack direction="block" gap="base">
+                {/* Expand/Collapse All Controls */}
+                <s-stack direction="inline" gap="base" align="center">
+                  <s-text variant="body-sm" color="subdued">
+                    {questions.length} question(s)
+                  </s-text>
+                  <s-button
+                    variant="tertiary"
+                    size="sm"
+                    onClick={expandAllQuestions}
+                  >
+                    Expand All
+                  </s-button>
+                  <s-button
+                    variant="tertiary"
+                    size="sm"
+                    onClick={collapseAllQuestions}
+                  >
+                    Collapse All
+                  </s-button>
+                </s-stack>
 
-                    {/* Add Option Form */}
+                {questions.map((question, index) => {
+                  const isExpanded = expandedQuestions[question.id] !== false;
+                  return (
                     <s-box
+                      display="auto"
+                      key={question.id}
                       padding="base"
                       borderWidth="base"
                       borderRadius="base"
-                      background="subdued"
+                      background="surface"
                     >
                       <s-stack direction="block" gap="base">
-                        <s-text variant="heading-sm">Add Option</s-text>
-                        <s-text-field
-                          label="Option Text"
-                          value={newOptionText[question.id] || ""}
-                          onChange={(e) =>
-                            setNewOptionText((prev) => ({
-                              ...prev,
-                              [question.id]: (e.target as HTMLInputElement)
-                                .value,
-                            }))
-                          }
-                          placeholder="e.g., Casual everyday wear"
-                        />
-                        {question.type === "image_choice" && (
-                          <s-text-field
-                            label="Image URL (Optional)"
-                            value={newOptionImageUrl[question.id] || ""}
-                            onChange={(e) =>
-                              setNewOptionImageUrl((prev) => ({
-                                ...prev,
-                                [question.id]: (e.target as HTMLInputElement)
-                                  .value,
-                              }))
-                            }
-                            placeholder="https://example.com/image.jpg"
-                          />
-                        )}
-                        <s-text-field
-                          label="Product Tags (comma-separated)"
-                          value={newOptionTags[question.id] || ""}
-                          onChange={(e) =>
-                            setNewOptionTags((prev) => ({
-                              ...prev,
-                              [question.id]: (e.target as HTMLInputElement)
-                                .value,
-                            }))
-                          }
-                          placeholder="casual, everyday, comfortable"
-                          helpText={
-                            availableTags.length > 0
-                              ? `Available tags: ${availableTags.slice(0, 10).join(", ")}${availableTags.length > 10 ? "..." : ""}`
-                              : "Products with these tags will be recommended for this option"
-                          }
-                        />
-                        {availableTags.length > 0 && (
-                          <s-inline-stack gap="100" wrap>
-                            {(showAllTags[question.id]
-                              ? availableTags
-                              : availableTags.slice(0, 6)
-                            ).map((tag) => (
-                              <s-button
-                                key={tag}
-                                size="micro"
-                                variant="plain"
-                                onClick={() => addTagToOption(question.id, tag)}
-                              >
-                                + {tag}
-                              </s-button>
-                            ))}
-                            {availableTags.length > 6 && (
-                              <s-button
-                                size="micro"
-                                variant="plain"
-                                onClick={() =>
-                                  setShowAllTags((prev) => ({
-                                    ...prev,
-                                    [question.id]: !prev[question.id],
-                                  }))
-                                }
-                              >
-                                {showAllTags[question.id]
-                                  ? "- Show less"
-                                  : `+ Show ${availableTags.length - 6} more`}
-                              </s-button>
-                            )}
-                          </s-inline-stack>
-                        )}
-                        <s-text-field
-                          label="Product Types (comma-separated)"
-                          value={newOptionTypes[question.id] || ""}
-                          onChange={(e) =>
-                            setNewOptionTypes((prev) => ({
-                              ...prev,
-                              [question.id]: (e.target as HTMLInputElement)
-                                .value,
-                            }))
-                          }
-                          placeholder="t-shirt, jeans, sneakers"
-                          helpText={
-                            availableTypes.length > 0
-                              ? `Available types: ${availableTypes.slice(0, 10).join(", ")}${availableTypes.length > 10 ? "..." : ""}`
-                              : "Products of these types will be recommended for this option"
-                          }
-                        />
-                        {availableTypes.length > 0 && (
-                          <s-inline-stack gap="100" wrap>
-                            {(showAllTypes[question.id]
-                              ? availableTypes
-                              : availableTypes.slice(0, 6)
-                            ).map((type) => (
-                              <s-button
-                                key={type}
-                                size="micro"
-                                variant="plain"
-                                onClick={() =>
-                                  addTypeToOption(question.id, type)
-                                }
-                              >
-                                + {type}
-                              </s-button>
-                            ))}
-                            {availableTypes.length > 6 && (
-                              <s-button
-                                size="micro"
-                                variant="plain"
-                                onClick={() =>
-                                  setShowAllTypes((prev) => ({
-                                    ...prev,
-                                    [question.id]: !prev[question.id],
-                                  }))
-                                }
-                              >
-                                {showAllTypes[question.id]
-                                  ? "- Show less"
-                                  : `+ Show ${availableTypes.length - 6} more`}
-                              </s-button>
-                            )}
-                          </s-inline-stack>
-                        )}
-
-                        {/* Advanced Product Matching */}
-                        <s-box
-                          padding="base"
-                          borderWidth="base"
-                          borderRadius="base"
-                          background="surface"
+                        {/* Question Header - Always Visible */}
+                        <s-stack
+                          direction="inline"
+                          gap="base"
+                          align="space-between"
                         >
-                          <s-stack direction="block" gap="base">
+                          <s-stack
+                            direction="inline"
+                            gap="base"
+                            align="center"
+                            style={{ flex: 1, cursor: "pointer" }}
+                            onClick={() => toggleQuestion(question.id)}
+                          >
+                            <s-badge>Q{index + 1}</s-badge>
                             <s-text variant="heading-sm">
-                              Advanced Product Matching
+                              {question.text}
                             </s-text>
                             <s-text variant="body-sm" color="subdued">
-                              Search and select specific products to recommend
-                              for this option
+                              ({question.options.length} option
+                              {question.options.length !== 1 ? "s" : ""})
+                            </s-text>
+                            {/* Expand/Collapse Icon */}
+                            <s-icon
+                              source={
+                                isExpanded ? "chevron-up" : "chevron-down"
+                              }
+                            />
+                          </s-stack>
+                          <s-stack direction="block" gap="tight">
+                            <s-button
+                              variant="tertiary"
+                              size="sm"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                toggleQuestion(question.id);
+                              }}
+                              aria-label={
+                                isExpanded
+                                  ? "Collapse question"
+                                  : "Expand question"
+                              }
+                            >
+                              {isExpanded ? "Collapse" : "Expand"}
+                            </s-button>
+                            <s-button
+                              variant="tertiary"
+                              size="sm"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeleteQuestion(question.id);
+                              }}
+                              aria-label={`Delete question: ${question.text}`}
+                            >
+                              Delete
+                            </s-button>
+                          </s-stack>
+                        </s-stack>
+
+                        {/* Question Details - Collapsible */}
+                        {isExpanded && (
+                          <>
+                            <s-text variant="body-sm" color="subdued">
+                              Type: {question.type.replace("_", " ")}
                             </s-text>
 
-                            <s-button
-                              onClick={() =>
-                                setShowProductBrowser((prev) => ({
-                                  ...prev,
-                                  [question.id]: !prev[question.id],
-                                }))
-                              }
-                              variant="secondary"
-                              size="sm"
-                            >
-                              {showProductBrowser[question.id]
-                                ? "Hide"
-                                : "Browse"}{" "}
-                              Products
-                            </s-button>
-
-                            {showProductBrowser[question.id] && (
-                              <s-stack direction="block" gap="base">
-                                <s-text-field
-                                  label="Search Products"
-                                  value={productSearchQuery[question.id] || ""}
-                                  onChange={(e) => {
-                                    const query = (e.target as HTMLInputElement)
-                                      .value;
-                                    setProductSearchQuery((prev) => ({
-                                      ...prev,
-                                      [question.id]: query,
-                                    }));
-                                    if (query.length > 2) {
-                                      searchProducts(question.id, query);
-                                    }
-                                  }}
-                                  placeholder="Search by product name, tag, or type..."
-                                />
-
-                                {searchLoading[question.id] && (
-                                  <s-stack direction="block" gap="base">
-                                    <s-text variant="body-sm" color="subdued">
-                                      Searching products...
-                                    </s-text>
-                                    {/* Loading skeletons */}
-                                    {[1, 2, 3].map((i) => (
-                                      <s-box
-                                        key={i}
-                                        padding="base"
-                                        borderWidth="base"
-                                        borderRadius="base"
-                                        background="subdued"
-                                      >
-                                        <s-stack direction="inline" gap="base">
-                                          <s-box
-                                            style={{
-                                              width: "40px",
-                                              height: "40px",
-                                              backgroundColor: "#e3e3e3",
-                                              borderRadius: "4px",
-                                              animation: "pulse 1.5s ease-in-out infinite",
-                                            }}
-                                          />
-                                          <s-stack direction="block" gap="tight" style={{ flex: 1 }}>
-                                            <s-box
-                                              style={{
-                                                width: "60%",
-                                                height: "16px",
-                                                backgroundColor: "#e3e3e3",
-                                                borderRadius: "4px",
-                                                animation: "pulse 1.5s ease-in-out infinite",
-                                              }}
-                                            />
-                                            <s-box
-                                              style={{
-                                                width: "40%",
-                                                height: "14px",
-                                                backgroundColor: "#e3e3e3",
-                                                borderRadius: "4px",
-                                                animation: "pulse 1.5s ease-in-out infinite",
-                                              }}
-                                            />
-                                          </s-stack>
-                                        </s-stack>
-                                      </s-box>
-                                    ))}
-                                  </s-stack>
-                                )}
-
-                                {!searchLoading[question.id] &&
-                                  searchResults[question.id] &&
-                                  searchResults[question.id].length > 0 && (
-                                    <s-stack direction="block" gap="tight">
-                                      <s-text variant="body-sm">
-                                        Select products to recommend:
-                                      </s-text>
-                                      <s-stack
-                                        direction="block"
-                                        gap="tight"
-                                        style={{
-                                          maxHeight: "300px",
-                                          overflowY: "auto",
-                                        }}
-                                      >
-                                        {searchResults[question.id].map(
-                                          (product) => {
-                                            const isSelected = selectedProducts[
-                                              question.id
-                                            ]?.includes(product.id);
-                                            
-                                            return (
-                                            <s-box
-                                              key={product.id}
-                                              padding="base"
-                                              borderWidth="base"
-                                              borderRadius="base"
-                                              background={
-                                                isSelected
-                                                  ? "success-subdued"
-                                                  : "surface"
-                                              }
-                                              style={{ 
-                                                cursor: "pointer",
-                                                border: isSelected ? "2px solid #008060" : "1px solid #c9cccf",
-                                                transition: "all 0.2s ease",
-                                                position: "relative"
-                                              }}
-                                              onClick={() =>
-                                                toggleProductSelection(
-                                                  question.id,
-                                                  product.id,
-                                                )
-                                              }
-                                            >
-                                              <s-stack
-                                                direction="inline"
-                                                gap="base"
-                                                align="center"
-                                              >
-                                                {/* Checkbox indicator */}
-                                                <div
-                                                  style={{
-                                                    width: "20px",
-                                                    height: "20px",
-                                                    borderRadius: "4px",
-                                                    border: isSelected ? "2px solid #008060" : "2px solid #c9cccf",
-                                                    backgroundColor: isSelected ? "#008060" : "white",
-                                                    display: "flex",
-                                                    alignItems: "center",
-                                                    justifyContent: "center",
-                                                    flexShrink: 0,
-                                                    transition: "all 0.2s ease"
-                                                  }}
-                                                >
-                                                  {isSelected && (
-                                                    <svg
-                                                      width="14"
-                                                      height="14"
-                                                      viewBox="0 0 20 20"
-                                                      fill="none"
-                                                      xmlns="http://www.w3.org/2000/svg"
-                                                    >
-                                                      <path
-                                                        d="M16 6L8.5 13.5L4 9"
-                                                        stroke="white"
-                                                        strokeWidth="2.5"
-                                                        strokeLinecap="round"
-                                                        strokeLinejoin="round"
-                                                      />
-                                                    </svg>
-                                                  )}
-                                                </div>
-                                                
-                                                {product.imageUrl && (
-                                                  <img
-                                                    src={product.imageUrl}
-                                                    alt={
-                                                      product.imageAlt ||
-                                                      product.title
-                                                    }
-                                                    style={{
-                                                      width: "40px",
-                                                      height: "40px",
-                                                      objectFit: "cover",
-                                                      borderRadius: "4px",
-                                                    }}
-                                                  />
-                                                )}
-                                                <s-stack
-                                                  direction="block"
-                                                  gap="tight"
-                                                  style={{ flex: 1 }}
-                                                >
-                                                  <s-stack direction="inline" gap="tight" align="center">
-                                                    <s-text variant="heading-sm">
-                                                      {product.title}
-                                                    </s-text>
-                                                    {/* Status badge */}
-                                                    <s-badge
-                                                      tone={
-                                                        product.status === "ACTIVE"
-                                                          ? "success"
-                                                          : product.status === "DRAFT"
-                                                          ? "attention"
-                                                          : "subdued"
-                                                      }
-                                                    >
-                                                      {product.status === "ACTIVE"
-                                                        ? "Active"
-                                                        : product.status === "DRAFT"
-                                                        ? "Draft"
-                                                        : "Archived"}
-                                                    </s-badge>
-                                                  </s-stack>
-                                                  <s-text
-                                                    variant="body-sm"
-                                                    color="subdued"
-                                                  >
-                                                    {product.productType} • $
-                                                    {product.price.min.toFixed(
-                                                      2,
-                                                    )}
-                                                    {/* Inventory indicator */}
-                                                    {product.totalInventory !== undefined && (
-                                                      <>
-                                                        {" • "}
-                                                        <span
-                                                          style={{
-                                                            color:
-                                                              product.totalInventory === 0
-                                                                ? "#bf0711"
-                                                                : product.totalInventory < 10
-                                                                ? "#b98900"
-                                                                : "#008060",
-                                                          }}
-                                                        >
-                                                          {product.totalInventory === 0
-                                                            ? "Out of stock"
-                                                            : product.totalInventory < 10
-                                                            ? `Low stock: ${product.totalInventory}`
-                                                            : `${product.totalInventory} in stock`}
-                                                        </span>
-                                                      </>
-                                                    )}
-                                                    {product.tags.length > 0 &&
-                                                      ` • Tags: ${product.tags.slice(0, 3).join(", ")}`}
-                                                  </s-text>
-                                                </s-stack>
-                                              </s-stack>
-                                            </s-box>
-                                            );
-                                          }
-                                        )}
-                                      </s-stack>
-
-                                      {selectedProducts[question.id] &&
-                                        selectedProducts[question.id].length >
-                                          0 && (
-                                          <s-box
-                                            padding="base"
-                                            borderWidth="base"
-                                            borderRadius="base"
-                                            style={{
-                                              backgroundColor: "#e0f5ef",
-                                              borderColor: "#008060"
-                                            }}
-                                          >
-                                            <s-stack
-                                              direction="inline"
-                                              gap="base"
-                                              align="center"
-                                            >
-                                              <s-icon source="checkmark-circle" color="success" />
-                                              <s-text variant="body-sm" style={{ fontWeight: "500", flex: 1 }}>
-                                                {selectedProducts[question.id].length}{" "}
-                                                product{selectedProducts[question.id].length > 1 ? "s" : ""} selected
-                                              </s-text>
-                                              <s-button
-                                                onClick={() =>
-                                                  handleAdvancedProductMatching(
-                                                    question.id,
-                                                  )
-                                                }
-                                                variant="primary"
-                                              >
-                                                Use Selected Products
-                                              </s-button>
-                                            </s-stack>
-                                          </s-box>
-                                        )}
-                                    </s-stack>
-                                  )}
-
-                                {!searchLoading[question.id] &&
-                                  searchResults[question.id] &&
-                                  searchResults[question.id].length === 0 &&
-                                  productSearchQuery[question.id] && (
+                            {question.options.length > 0 && (
+                              <s-stack direction="block" gap="base large">
+                                <s-text>Options:</s-text>
+                                <s-stack
+                                  direction="block"
+                                  gap="large large-200"
+                                >
+                                  {question.options.map((option) => (
                                     <s-box
-                                      padding="base"
+                                      key={option.id}
+                                      padding="base base base large"
                                       borderWidth="base"
                                       borderRadius="base"
                                       background="subdued"
                                     >
-                                      <s-stack direction="block" gap="tight">
-                                        <s-text variant="body-sm" color="subdued">
-                                          No products found for &quot;
-                                          {productSearchQuery[question.id]}&quot;
-                                        </s-text>
-                                        <s-text variant="body-sm" color="subdued">
-                                          Try searching by:
-                                        </s-text>
+                                      <s-stack
+                                        direction="inline"
+                                        gap="base"
+                                        alignContent="baseline"
+                                        alignItems="baseline"
+                                      >
                                         <s-stack direction="block" gap="tight">
-                                          <s-text variant="body-sm" color="subdued">
-                                            • Product name (e.g., &quot;Snowboard&quot;)
-                                          </s-text>
-                                          <s-text variant="body-sm" color="subdued">
-                                            • Product type (e.g., &quot;Apparel&quot;, &quot;Sports&quot;)
-                                          </s-text>
-                                          <s-text variant="body-sm" color="subdued">
-                                            • Product tag (e.g., &quot;Winter&quot;, &quot;Sale&quot;)
-                                          </s-text>
+                                          <s-text>{option.text}</s-text>
+                                          {option.imageUrl && (
+                                            <s-text color="subdued">
+                                              Image: {option.imageUrl}
+                                            </s-text>
+                                          )}
+                                          {option.productMatching && (
+                                            <s-text
+                                              variant="body-sm"
+                                              color="subdued"
+                                            >
+                                              Matches:{" "}
+                                              {(() => {
+                                                try {
+                                                  // Handle both string and object cases
+                                                  const matching =
+                                                    typeof option.productMatching ===
+                                                    "string"
+                                                      ? JSON.parse(
+                                                          option.productMatching,
+                                                        )
+                                                      : option.productMatching;
+
+                                                  const parts = [];
+                                                  if (matching?.tags?.length)
+                                                    parts.push(
+                                                      `Tags: ${matching.tags.join(", ")}`,
+                                                    );
+                                                  if (matching?.types?.length)
+                                                    parts.push(
+                                                      `Types: ${matching.types.join(", ")}`,
+                                                    );
+
+                                                  return (
+                                                    parts.join(" | ") ||
+                                                    "No matching rules"
+                                                  );
+                                                } catch (error) {
+                                                  console.error(
+                                                    "Error parsing productMatching:",
+                                                    error,
+                                                    "Data:",
+                                                    option.productMatching,
+                                                  );
+                                                  return `Invalid matching data: ${typeof option.productMatching}`;
+                                                }
+                                              })()}
+                                            </s-text>
+                                          )}
                                         </s-stack>
+                                        <s-button
+                                          variant="tertiary"
+                                          size="sm"
+                                          onClick={() =>
+                                            handleDeleteOption(option.id)
+                                          }
+                                          aria-label={`Delete option: ${option.text}`}
+                                        >
+                                          Delete
+                                        </s-button>
                                       </s-stack>
                                     </s-box>
-                                  )}
+                                  ))}
+                                </s-stack>
                               </s-stack>
                             )}
-                          </s-stack>
-                        </s-box>
-                        <s-button
-                          onClick={() => handleAddOption(question.id)}
-                          variant="primary"
-                          size="sm"
-                        >
-                          Add Option
-                        </s-button>
+
+                            {/* Add Option Form */}
+                            <s-box
+                              padding="base"
+                              borderWidth="base"
+                              borderRadius="base"
+                              background="subdued"
+                            >
+                              <s-stack direction="block" gap="base">
+                                <s-text variant="heading-sm">Add Option</s-text>
+
+                                {/* Product Matching Requirement Banner */}
+                                <s-banner variant="info">
+                                  <s-stack direction="block" gap="tight">
+                                    <s-text variant="body-sm">
+                                      <strong>
+                                        🎯 Product Matching Required:
+                                      </strong>{" "}
+                                      Add at least one{" "}
+                                      <strong>Product Tag</strong> OR{" "}
+                                      <strong>Product Type</strong> to enable
+                                      recommendations for this option.
+                                    </s-text>
+                                    <s-text variant="body-sm" color="subdued">
+                                      Example: For &quot;Casual Style&quot;
+                                      option, add tags like &quot;casual,
+                                      everyday&quot; or types like
+                                      &quot;t-shirt, jeans&quot;
+                                    </s-text>
+                                  </s-stack>
+                                </s-banner>
+
+                                <s-text-field
+                                  label="Option Text"
+                                  value={newOptionText[question.id] || ""}
+                                  onChange={(e) =>
+                                    setNewOptionText((prev) => ({
+                                      ...prev,
+                                      [question.id]: (
+                                        e.target as HTMLInputElement
+                                      ).value,
+                                    }))
+                                  }
+                                  placeholder="e.g., Casual everyday wear"
+                                />
+                                {question.type === "image_choice" && (
+                                  <s-text-field
+                                    label="Image URL (Optional)"
+                                    value={newOptionImageUrl[question.id] || ""}
+                                    onChange={(e) =>
+                                      setNewOptionImageUrl((prev) => ({
+                                        ...prev,
+                                        [question.id]: (
+                                          e.target as HTMLInputElement
+                                        ).value,
+                                      }))
+                                    }
+                                    placeholder="https://example.com/image.jpg"
+                                  />
+                                )}
+                                <s-text-field
+                                  label="Product Tags (comma-separated) *"
+                                  value={newOptionTags[question.id] || ""}
+                                  onChange={(e) =>
+                                    setNewOptionTags((prev) => ({
+                                      ...prev,
+                                      [question.id]: (
+                                        e.target as HTMLInputElement
+                                      ).value,
+                                    }))
+                                  }
+                                  placeholder="casual, everyday, comfortable"
+                                  helpText={
+                                    availableTags.length > 0
+                                      ? `Available tags: ${availableTags.slice(0, 10).join(", ")}${availableTags.length > 10 ? "..." : ""}`
+                                      : "Required: Add at least one tag OR product type. Products with these tags will be recommended."
+                                  }
+                                  requiredIndicator
+                                />
+                                {availableTags.length > 0 && (
+                                  <s-inline-stack wrap>
+                                    {(showAllTags[question.id]
+                                      ? availableTags
+                                      : availableTags.slice(0, 6)
+                                    ).map((tag) => (
+                                      <s-button
+                                        key={tag}
+                                        size="micro"
+                                        variant="plain"
+                                        onClick={() =>
+                                          addTagToOption(question.id, tag)
+                                        }
+                                      >
+                                        + {tag}
+                                      </s-button>
+                                    ))}
+                                    {availableTags.length > 6 && (
+                                      <s-button
+                                        size="micro"
+                                        variant="plain"
+                                        onClick={() =>
+                                          setShowAllTags((prev) => ({
+                                            ...prev,
+                                            [question.id]: !prev[question.id],
+                                          }))
+                                        }
+                                      >
+                                        {showAllTags[question.id]
+                                          ? "- Show less"
+                                          : `+ Show ${availableTags.length - 6} more`}
+                                      </s-button>
+                                    )}
+                                  </s-inline-stack>
+                                )}
+                                <s-text-field
+                                  label="Product Types (comma-separated) *"
+                                  value={newOptionTypes[question.id] || ""}
+                                  onChange={(e) =>
+                                    setNewOptionTypes((prev) => ({
+                                      ...prev,
+                                      [question.id]: (
+                                        e.target as HTMLInputElement
+                                      ).value,
+                                    }))
+                                  }
+                                  placeholder="t-shirt, jeans, sneakers"
+                                  helpText={
+                                    availableTypes.length > 0
+                                      ? `Available types: ${availableTypes.slice(0, 10).join(", ")}${availableTypes.length > 10 ? "..." : ""}`
+                                      : "Required: Add at least one type OR product tag. Products of these types will be recommended."
+                                  }
+                                  requiredIndicator
+                                />
+                                {availableTypes.length > 0 && (
+                                  <s-inline-stack gap="100" wrap>
+                                    {(showAllTypes[question.id]
+                                      ? availableTypes
+                                      : availableTypes.slice(0, 6)
+                                    ).map((type) => (
+                                      <s-button
+                                        key={type}
+                                        size="micro"
+                                        variant="plain"
+                                        onClick={() =>
+                                          addTypeToOption(question.id, type)
+                                        }
+                                      >
+                                        + {type}
+                                      </s-button>
+                                    ))}
+                                    {availableTypes.length > 6 && (
+                                      <s-button
+                                        size="micro"
+                                        variant="plain"
+                                        onClick={() =>
+                                          setShowAllTypes((prev) => ({
+                                            ...prev,
+                                            [question.id]: !prev[question.id],
+                                          }))
+                                        }
+                                      >
+                                        {showAllTypes[question.id]
+                                          ? "- Show less"
+                                          : `+ Show ${availableTypes.length - 6} more`}
+                                      </s-button>
+                                    )}
+                                  </s-inline-stack>
+                                )}
+
+                                {/* Advanced Product Matching */}
+                                <s-box
+                                  padding="base"
+                                  borderWidth="base"
+                                  borderRadius="base"
+                                  background="surface"
+                                >
+                                  <s-stack direction="block" gap="base">
+                                    <s-stack
+                                      direction="inline"
+                                      gap="tight"
+                                      align="center"
+                                    >
+                                      <s-text variant="heading-sm">
+                                        Advanced Product Matching
+                                      </s-text>
+                                      <s-tooltip content="Override tag/type matching by selecting specific products to recommend for this option. Use this for curated product bundles.">
+                                        <s-icon source="info" />
+                                      </s-tooltip>
+                                    </s-stack>
+                                    <s-text variant="body-sm" color="subdued">
+                                      💡 Optional: Search and select specific
+                                      products to recommend for this option.
+                                      This overrides tag/type matching.
+                                    </s-text>
+
+                                    <s-button
+                                      onClick={() =>
+                                        setShowProductBrowser((prev) => ({
+                                          ...prev,
+                                          [question.id]: !prev[question.id],
+                                        }))
+                                      }
+                                      variant="secondary"
+                                      size="sm"
+                                    >
+                                      {showProductBrowser[question.id]
+                                        ? "Hide"
+                                        : "Browse"}{" "}
+                                      Products
+                                    </s-button>
+
+                                    {showProductBrowser[question.id] && (
+                                      <s-stack direction="block" gap="base">
+                                        <s-text-field
+                                          label="Search Products"
+                                          value={
+                                            productSearchQuery[question.id] ||
+                                            ""
+                                          }
+                                          onChange={(e) => {
+                                            const query = (
+                                              e.target as HTMLInputElement
+                                            ).value;
+                                            setProductSearchQuery((prev) => ({
+                                              ...prev,
+                                              [question.id]: query,
+                                            }));
+                                            if (query.length > 2) {
+                                              searchProducts(
+                                                question.id,
+                                                query,
+                                              );
+                                            }
+                                          }}
+                                          placeholder="Search by product name, tag, or type..."
+                                        />
+
+                                        {searchLoading[question.id] && (
+                                          <s-stack direction="block" gap="base">
+                                            <s-text
+                                              variant="body-sm"
+                                              color="subdued"
+                                            >
+                                              Searching products...
+                                            </s-text>
+                                            {/* Loading skeletons */}
+                                            {[1, 2, 3].map((i) => (
+                                              <s-box
+                                                key={i}
+                                                padding="base"
+                                                borderWidth="base"
+                                                borderRadius="base"
+                                                background="subdued"
+                                              >
+                                                <s-stack
+                                                  direction="inline"
+                                                  gap="base"
+                                                >
+                                                  <s-box
+                                                    style={{
+                                                      width: "40px",
+                                                      height: "40px",
+                                                      backgroundColor:
+                                                        "#e3e3e3",
+                                                      borderRadius: "4px",
+                                                      animation:
+                                                        "pulse 1.5s ease-in-out infinite",
+                                                    }}
+                                                  />
+                                                  <s-stack
+                                                    direction="block"
+                                                    gap="tight"
+                                                    style={{ flex: 1 }}
+                                                  >
+                                                    <s-box
+                                                      style={{
+                                                        width: "60%",
+                                                        height: "16px",
+                                                        backgroundColor:
+                                                          "#e3e3e3",
+                                                        borderRadius: "4px",
+                                                        animation:
+                                                          "pulse 1.5s ease-in-out infinite",
+                                                      }}
+                                                    />
+                                                    <s-box
+                                                      style={{
+                                                        width: "40%",
+                                                        height: "14px",
+                                                        backgroundColor:
+                                                          "#e3e3e3",
+                                                        borderRadius: "4px",
+                                                        animation:
+                                                          "pulse 1.5s ease-in-out infinite",
+                                                      }}
+                                                    />
+                                                  </s-stack>
+                                                </s-stack>
+                                              </s-box>
+                                            ))}
+                                          </s-stack>
+                                        )}
+
+                                        {!searchLoading[question.id] &&
+                                          searchResults[question.id] &&
+                                          searchResults[question.id].length >
+                                            0 && (
+                                            <s-stack
+                                              direction="block"
+                                              gap="tight"
+                                            >
+                                              <s-text variant="body-sm">
+                                                Select products to recommend:
+                                              </s-text>
+                                              <s-stack
+                                                direction="block"
+                                                gap="tight"
+                                                style={{
+                                                  maxHeight: "300px",
+                                                  overflowY: "auto",
+                                                }}
+                                              >
+                                                {searchResults[question.id].map(
+                                                  (product) => {
+                                                    const isSelected =
+                                                      selectedProducts[
+                                                        question.id
+                                                      ]?.includes(product.id);
+
+                                                    return (
+                                                      <s-box
+                                                        key={product.id}
+                                                        padding="base"
+                                                        borderWidth="base"
+                                                        borderRadius="base"
+                                                        background={
+                                                          isSelected
+                                                            ? "success-subdued"
+                                                            : "surface"
+                                                        }
+                                                        style={{
+                                                          cursor: "pointer",
+                                                          border: isSelected
+                                                            ? "2px solid #008060"
+                                                            : "1px solid #c9cccf",
+                                                          transition:
+                                                            "all 0.2s ease",
+                                                          position: "relative",
+                                                        }}
+                                                        onClick={() =>
+                                                          toggleProductSelection(
+                                                            question.id,
+                                                            product.id,
+                                                          )
+                                                        }
+                                                      >
+                                                        <s-stack
+                                                          direction="inline"
+                                                          gap="base"
+                                                          align="center"
+                                                        >
+                                                          {/* Checkbox indicator */}
+                                                          <div
+                                                            style={{
+                                                              width: "20px",
+                                                              height: "20px",
+                                                              borderRadius:
+                                                                "4px",
+                                                              border: isSelected
+                                                                ? "2px solid #008060"
+                                                                : "2px solid #c9cccf",
+                                                              backgroundColor:
+                                                                isSelected
+                                                                  ? "#008060"
+                                                                  : "white",
+                                                              display: "flex",
+                                                              alignItems:
+                                                                "center",
+                                                              justifyContent:
+                                                                "center",
+                                                              flexShrink: 0,
+                                                              transition:
+                                                                "all 0.2s ease",
+                                                            }}
+                                                          >
+                                                            {isSelected && (
+                                                              <svg
+                                                                width="14"
+                                                                height="14"
+                                                                viewBox="0 0 20 20"
+                                                                fill="none"
+                                                                xmlns="http://www.w3.org/2000/svg"
+                                                              >
+                                                                <path
+                                                                  d="M16 6L8.5 13.5L4 9"
+                                                                  stroke="white"
+                                                                  strokeWidth="2.5"
+                                                                  strokeLinecap="round"
+                                                                  strokeLinejoin="round"
+                                                                />
+                                                              </svg>
+                                                            )}
+                                                          </div>
+
+                                                          {product.imageUrl && (
+                                                            <img
+                                                              src={
+                                                                product.imageUrl
+                                                              }
+                                                              alt={
+                                                                product.imageAlt ||
+                                                                product.title
+                                                              }
+                                                              style={{
+                                                                width: "40px",
+                                                                height: "40px",
+                                                                objectFit:
+                                                                  "cover",
+                                                                borderRadius:
+                                                                  "4px",
+                                                              }}
+                                                            />
+                                                          )}
+                                                          <s-stack
+                                                            direction="block"
+                                                            gap="tight"
+                                                            style={{ flex: 1 }}
+                                                          >
+                                                            <s-stack
+                                                              direction="inline"
+                                                              gap="tight"
+                                                              align="center"
+                                                            >
+                                                              <s-text variant="heading-sm">
+                                                                {product.title}
+                                                              </s-text>
+                                                              {/* Status badge */}
+                                                              <s-badge
+                                                                tone={
+                                                                  product.status ===
+                                                                  "ACTIVE"
+                                                                    ? "success"
+                                                                    : product.status ===
+                                                                        "DRAFT"
+                                                                      ? "attention"
+                                                                      : "subdued"
+                                                                }
+                                                              >
+                                                                {product.status ===
+                                                                "ACTIVE"
+                                                                  ? "Active"
+                                                                  : product.status ===
+                                                                      "DRAFT"
+                                                                    ? "Draft"
+                                                                    : "Archived"}
+                                                              </s-badge>
+                                                            </s-stack>
+                                                            <s-text
+                                                              variant="body-sm"
+                                                              color="subdued"
+                                                            >
+                                                              {
+                                                                product.productType
+                                                              }{" "}
+                                                              • $
+                                                              {product.price.min.toFixed(
+                                                                2,
+                                                              )}
+                                                              {/* Inventory indicator */}
+                                                              {product.totalInventory !==
+                                                                undefined && (
+                                                                <>
+                                                                  {" • "}
+                                                                  <span
+                                                                    style={{
+                                                                      color:
+                                                                        product.totalInventory ===
+                                                                        0
+                                                                          ? "#bf0711"
+                                                                          : product.totalInventory <
+                                                                              10
+                                                                            ? "#b98900"
+                                                                            : "#008060",
+                                                                    }}
+                                                                  >
+                                                                    {product.totalInventory ===
+                                                                    0
+                                                                      ? "Out of stock"
+                                                                      : product.totalInventory <
+                                                                          10
+                                                                        ? `Low stock: ${product.totalInventory}`
+                                                                        : `${product.totalInventory} in stock`}
+                                                                  </span>
+                                                                </>
+                                                              )}
+                                                              {product.tags
+                                                                .length > 0 &&
+                                                                ` • Tags: ${product.tags.slice(0, 3).join(", ")}`}
+                                                            </s-text>
+                                                          </s-stack>
+                                                        </s-stack>
+                                                      </s-box>
+                                                    );
+                                                  },
+                                                )}
+                                              </s-stack>
+
+                                              {selectedProducts[question.id] &&
+                                                selectedProducts[question.id]
+                                                  .length > 0 && (
+                                                  <s-box
+                                                    padding="base"
+                                                    borderWidth="base"
+                                                    borderRadius="base"
+                                                    style={{
+                                                      backgroundColor:
+                                                        "#e0f5ef",
+                                                      borderColor: "#008060",
+                                                    }}
+                                                  >
+                                                    <s-stack
+                                                      direction="inline"
+                                                      gap="base"
+                                                      align="center"
+                                                    >
+                                                      <s-icon
+                                                        source="checkmark-circle"
+                                                        color="success"
+                                                      />
+                                                      <s-text
+                                                        variant="body-sm"
+                                                        style={{
+                                                          fontWeight: "500",
+                                                          flex: 1,
+                                                        }}
+                                                      >
+                                                        {
+                                                          selectedProducts[
+                                                            question.id
+                                                          ].length
+                                                        }{" "}
+                                                        product
+                                                        {selectedProducts[
+                                                          question.id
+                                                        ].length > 1
+                                                          ? "s"
+                                                          : ""}{" "}
+                                                        selected
+                                                      </s-text>
+                                                      <s-button
+                                                        onClick={() =>
+                                                          handleAdvancedProductMatching(
+                                                            question.id,
+                                                          )
+                                                        }
+                                                        variant="primary"
+                                                      >
+                                                        Use Selected Products
+                                                      </s-button>
+                                                    </s-stack>
+                                                  </s-box>
+                                                )}
+                                            </s-stack>
+                                          )}
+
+                                        {!searchLoading[question.id] &&
+                                          searchResults[question.id] &&
+                                          searchResults[question.id].length ===
+                                            0 &&
+                                          productSearchQuery[question.id] && (
+                                            <s-box
+                                              padding="base"
+                                              borderWidth="base"
+                                              borderRadius="base"
+                                              background="subdued"
+                                            >
+                                              <s-stack
+                                                direction="block"
+                                                gap="tight"
+                                              >
+                                                <s-text
+                                                  variant="body-sm"
+                                                  color="subdued"
+                                                >
+                                                  No products found for &quot;
+                                                  {
+                                                    productSearchQuery[
+                                                      question.id
+                                                    ]
+                                                  }
+                                                  &quot;
+                                                </s-text>
+                                                <s-text
+                                                  variant="body-sm"
+                                                  color="subdued"
+                                                >
+                                                  Try searching by:
+                                                </s-text>
+                                                <s-stack
+                                                  direction="block"
+                                                  gap="tight"
+                                                >
+                                                  <s-text
+                                                    variant="body-sm"
+                                                    color="subdued"
+                                                  >
+                                                    • Product name (e.g.,
+                                                    &quot;Snowboard&quot;)
+                                                  </s-text>
+                                                  <s-text
+                                                    variant="body-sm"
+                                                    color="subdued"
+                                                  >
+                                                    • Product type (e.g.,
+                                                    &quot;Apparel&quot;,
+                                                    &quot;Sports&quot;)
+                                                  </s-text>
+                                                  <s-text
+                                                    variant="body-sm"
+                                                    color="subdued"
+                                                  >
+                                                    • Product tag (e.g.,
+                                                    &quot;Winter&quot;,
+                                                    &quot;Sale&quot;)
+                                                  </s-text>
+                                                </s-stack>
+                                              </s-stack>
+                                            </s-box>
+                                          )}
+                                      </s-stack>
+                                    )}
+                                  </s-stack>
+                                </s-box>
+                                <s-button
+                                  onClick={() => handleAddOption(question.id)}
+                                  variant="primary"
+                                  size="sm"
+                                  loading={fetcher.state === "submitting"}
+                                  disabled={fetcher.state === "submitting"}
+                                >
+                                  {fetcher.state === "submitting"
+                                    ? "Adding..."
+                                    : "Add Option"}
+                                </s-button>
+                              </s-stack>
+                            </s-box>
+                            {/* End of collapsible content */}
+                          </>
+                        )}
                       </s-stack>
                     </s-box>
-                  </s-stack>
-                </s-box>
-              ))}
-            </s-stack>
-          )}
+                  );
+                })}
+              </s-stack>
+            )}
 
-          {/* Add New Question */}
+            {/* Add New Question */}
+            <s-box
+              padding="base"
+              borderWidth="base"
+              borderRadius="base"
+              background="subdued"
+            >
+              <s-stack direction="block" gap="base">
+                <s-text variant="heading-sm">Add New Question</s-text>
+                <s-text-field
+                  label="Question Text"
+                  value={newQuestionText}
+                  onChange={(e) =>
+                    setNewQuestionText((e.target as HTMLInputElement).value)
+                  }
+                  placeholder="e.g., What's your style preference?"
+                />
+                <s-select
+                  label="Question Type"
+                  value={newQuestionType}
+                  onChange={(e) =>
+                    setNewQuestionType((e.target as HTMLSelectElement).value)
+                  }
+                  options={[
+                    { label: "Multiple Choice", value: "multiple_choice" },
+                    { label: "Image Choice", value: "image_choice" },
+                    { label: "Text Input", value: "text_input" },
+                  ]}
+                />
+                <s-button onClick={handleAddQuestion} variant="primary">
+                  Add Question
+                </s-button>
+              </s-stack>
+            </s-box>
+          </s-stack>
+        </s-section>
+
+        {/* Sidebar - Quiz Status */}
+        <s-section slot="aside" heading="Quiz Status">
+          <s-stack direction="block" gap="base">
+            <s-badge
+              variant={
+                quiz.status === "active"
+                  ? "success"
+                  : quiz.status === "draft"
+                    ? "warning"
+                    : "default"
+              }
+            >
+              {quiz.status.toUpperCase()}
+            </s-badge>
+
+            <s-text variant="body-sm" color="subdued">
+              {quiz.status === "active"
+                ? "This quiz is live and visible to customers"
+                : "This quiz is in draft mode and not visible to customers"}
+            </s-text>
+
+            <s-button
+              onclick={() => navigate(`/app/quizzes/${quiz.id}/analytics`)}
+              variant="secondary"
+              fullWidth
+            >
+              View Analytics
+            </s-button>
+          </s-stack>
+        </s-section>
+      </s-page>
+
+      {/* Confirmation Modal */}
+      {confirmModal.isOpen && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: "rgba(0, 0, 0, 0.5)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+          }}
+          onClick={() => setConfirmModal({ ...confirmModal, isOpen: false })}
+        >
           <s-box
             padding="base"
-            borderWidth="base"
-            borderRadius="base"
-            background="subdued"
-          >
-            <s-stack direction="block" gap="base">
-              <s-text variant="heading-sm">Add New Question</s-text>
-              <s-text-field
-                label="Question Text"
-                value={newQuestionText}
-                onChange={(e) =>
-                  setNewQuestionText((e.target as HTMLInputElement).value)
-                }
-                placeholder="e.g., What's your style preference?"
-              />
-              <s-select
-                label="Question Type"
-                value={newQuestionType}
-                onChange={(e) =>
-                  setNewQuestionType((e.target as HTMLSelectElement).value)
-                }
-                options={[
-                  { label: "Multiple Choice", value: "multiple_choice" },
-                  { label: "Image Choice", value: "image_choice" },
-                  { label: "Text Input", value: "text_input" },
-                ]}
-              />
-              <s-button onClick={handleAddQuestion} variant="primary">
-                Add Question
-              </s-button>
-            </s-stack>
-          </s-box>
-        </s-stack>
-      </s-section>
-
-      {/* AI Generation */}
-      <s-section heading="AI Tools">
-        <s-stack direction="block" gap="base">
-          <s-box
-            padding="base"
-            borderWidth="base"
             borderRadius="base"
             background="surface"
+            style={{
+              maxWidth: "500px",
+              width: "90%",
+              boxShadow: "0 8px 24px rgba(0, 0, 0, 0.15)",
+            }}
+            onClick={(e) => e.stopPropagation()}
           >
             <s-stack direction="block" gap="base">
-              <s-stack direction="inline" gap="base" align="center">
-                <s-icon source="magic" />
-                <s-text variant="heading-sm">Generate Questions with AI</s-text>
+              <s-text variant="heading-md">{confirmModal.title}</s-text>
+              <s-text variant="body-md">{confirmModal.message}</s-text>
+              <s-stack direction="inline" gap="base" align="end">
+                <s-button
+                  variant="secondary"
+                  onClick={() =>
+                    setConfirmModal({ ...confirmModal, isOpen: false })
+                  }
+                >
+                  Cancel
+                </s-button>
+                <s-button
+                  variant="primary"
+                  tone="critical"
+                  onClick={confirmModal.onConfirm}
+                >
+                  Delete
+                </s-button>
               </s-stack>
-              <s-text variant="body-sm" color="subdued">
-                AI will analyze your product catalog and create personalized
-                quiz questions. This feature is coming soon!
-              </s-text>
-              <s-button
-                onClick={handleGenerateAI}
-                variant="primary"
-                loading={fetcher.state === "submitting"}
-              >
-                Generate with AI
-              </s-button>
             </s-stack>
           </s-box>
-        </s-stack>
-      </s-section>
-
-      {/* Sidebar - Quiz Status */}
-      <s-section slot="aside" heading="Quiz Status">
-        <s-stack direction="block" gap="base">
-          <s-badge
-            variant={
-              quiz.status === "active"
-                ? "success"
-                : quiz.status === "draft"
-                  ? "warning"
-                  : "default"
-            }
-          >
-            {quiz.status.toUpperCase()}
-          </s-badge>
-
-          <s-text variant="body-sm" color="subdued">
-            {quiz.status === "active"
-              ? "This quiz is live and visible to customers"
-              : "This quiz is in draft mode and not visible to customers"}
-          </s-text>
-
-          <s-button
-            onclick={() => navigate(`/app/quizzes/${quiz.id}/analytics`)}
-            variant="secondary"
-            fullWidth
-          >
-            View Analytics
-          </s-button>
-        </s-stack>
-      </s-section>
-    </s-page>
+        </div>
+      )}
     </>
   );
 }
@@ -1579,7 +2000,7 @@ async function generateQuestionsWithAI(
   tags: string[],
   types: string[],
   style: string,
-  quizTitle: string
+  quizTitle: string,
 ) {
   if (!openai) {
     throw new Error("OpenAI client not initialized");
@@ -1587,19 +2008,18 @@ async function generateQuestionsWithAI(
 
   // Calculate price ranges for budget questions
   const prices = products
-    .map(p => parseFloat(p.variants?.edges?.[0]?.node?.price || 0))
-    .filter(p => p > 0);
-  
-  const avgPrice = prices.length > 0 
-    ? prices.reduce((a, b) => a + b, 0) / prices.length 
-    : 50;
+    .map((p) => parseFloat(p.variants?.edges?.[0]?.node?.price || 0))
+    .filter((p) => p > 0);
+
+  const avgPrice =
+    prices.length > 0 ? prices.reduce((a, b) => a + b, 0) / prices.length : 50;
   const minPrice = prices.length > 0 ? Math.min(...prices) : 0;
   const maxPrice = prices.length > 0 ? Math.max(...prices) : 100;
 
   // Analyze price distribution by product type
   // This ensures we only ask about categories that have products at various price points
   const priceByType: Record<string, number[]> = {};
-  products.forEach(p => {
+  products.forEach((p) => {
     const type = p.productType;
     const price = parseFloat(p.variants?.edges?.[0]?.node?.price || 0);
     if (type && price > 0) {
@@ -1653,7 +2073,7 @@ Common Tags: ${tags.slice(0, 20).join(", ")}
 Overall Price Range: $${minPrice.toFixed(2)} - $${maxPrice.toFixed(2)} (avg: $${avgPrice.toFixed(2)})
 
 Price by Category:
-${typeStats.map(s => `- ${s.type}: $${s.minPrice.toFixed(2)}-$${s.maxPrice.toFixed(2)} (${s.count} items)`).join('\n')}
+${typeStats.map((s) => `- ${s.type}: $${s.minPrice.toFixed(2)}-$${s.maxPrice.toFixed(2)} (${s.count} items)`).join("\n")}
 
 REQUIREMENTS:
 1. Start with a BUDGET question that has 4 price range options
@@ -1745,7 +2165,7 @@ Requirements:
 
     // Parse the response
     let parsedResponse = JSON.parse(responseText);
-    
+
     // Handle different response formats
     if (parsedResponse.questions) {
       parsedResponse = parsedResponse.questions;
@@ -1757,7 +2177,7 @@ Requirements:
     const rawQuestions = parsedResponse.map((q: any, idx: number) => ({
       text: (q.text || `Question ${idx + 1}`).trim(),
       type: q.type || "multiple_choice",
-      order: typeof q.order === 'number' ? q.order : idx,
+      order: typeof q.order === "number" ? q.order : idx,
       conditionalRules: q.conditionalRules || null,
       options: (q.options || []).map((opt: any) => ({
         text: (opt.text || "Option").trim(),
@@ -1777,11 +2197,11 @@ Requirements:
     const questionMap = new Map<string, any>();
 
     for (const q of rawQuestions) {
-      const key = (q.text || '').toLowerCase().replace(/\s+/g, ' ').trim();
+      const key = (q.text || "").toLowerCase().replace(/\s+/g, " ").trim();
 
       // normalize options and dedupe them by text
       const normalizedOpts = (q.options || []).map((o: any) => ({
-        text: (o.text || '').trim(),
+        text: (o.text || "").trim(),
         matchingTags: Array.isArray(o.matchingTags) ? o.matchingTags : [],
         matchingTypes: Array.isArray(o.matchingTypes) ? o.matchingTypes : [],
         budgetMin: o.budgetMin,
@@ -1791,13 +2211,20 @@ Requirements:
       if (!questionMap.has(key)) {
         const optMap = new Map<string, any>();
         for (const o of normalizedOpts) {
-          const ok = (o.text || '').toLowerCase();
+          const ok = (o.text || "").toLowerCase();
           if (!optMap.has(ok)) {
             optMap.set(ok, o);
           } else {
             const ex = optMap.get(ok);
-            ex.matchingTags = Array.from(new Set([...(ex.matchingTags || []), ...(o.matchingTags || [])]));
-            ex.matchingTypes = Array.from(new Set([...(ex.matchingTypes || []), ...(o.matchingTypes || [])]));
+            ex.matchingTags = Array.from(
+              new Set([...(ex.matchingTags || []), ...(o.matchingTags || [])]),
+            );
+            ex.matchingTypes = Array.from(
+              new Set([
+                ...(ex.matchingTypes || []),
+                ...(o.matchingTypes || []),
+              ]),
+            );
             ex.budgetMin = ex.budgetMin ?? o.budgetMin;
             ex.budgetMax = ex.budgetMax ?? o.budgetMax;
           }
@@ -1811,16 +2238,28 @@ Requirements:
       } else {
         // merge options into existing question
         const existing = questionMap.get(key);
-        const existingOptMap = new Map((existing.options || []).map((o: any) => [ (o.text||'').toLowerCase(), o ]));
+        const existingOptMap = new Map(
+          (existing.options || []).map((o: any) => [
+            (o.text || "").toLowerCase(),
+            o,
+          ]),
+        );
         for (const o of normalizedOpts) {
-          const ok = (o.text || '').toLowerCase();
+          const ok = (o.text || "").toLowerCase();
           if (!existingOptMap.has(ok)) {
             existing.options.push(o);
             existingOptMap.set(ok, o);
           } else {
             const ex = existingOptMap.get(ok);
-            ex.matchingTags = Array.from(new Set([...(ex.matchingTags || []), ...(o.matchingTags || [])]));
-            ex.matchingTypes = Array.from(new Set([...(ex.matchingTypes || []), ...(o.matchingTypes || [])]));
+            ex.matchingTags = Array.from(
+              new Set([...(ex.matchingTags || []), ...(o.matchingTags || [])]),
+            );
+            ex.matchingTypes = Array.from(
+              new Set([
+                ...(ex.matchingTypes || []),
+                ...(o.matchingTypes || []),
+              ]),
+            );
             ex.budgetMin = ex.budgetMin ?? o.budgetMin;
             ex.budgetMax = ex.budgetMax ?? o.budgetMax;
           }
@@ -1828,13 +2267,15 @@ Requirements:
       }
     }
 
-    let finalQuestions = Array.from(questionMap.values()).sort((a, b) => (a.order || 0) - (b.order || 0));
+    let finalQuestions = Array.from(questionMap.values()).sort(
+      (a, b) => (a.order || 0) - (b.order || 0),
+    );
 
     // If deduplication reduced the count below 5, supplement with basic generated questions
     if (finalQuestions.length < 5) {
       const supplement = generateBasicQuestions(products, tags, types);
       for (const s of supplement) {
-        const sk = (s.text || '').toLowerCase().replace(/\s+/g, ' ').trim();
+        const sk = (s.text || "").toLowerCase().replace(/\s+/g, " ").trim();
         if (!questionMap.has(sk)) {
           finalQuestions.push(s);
           questionMap.set(sk, s);
@@ -1863,13 +2304,13 @@ Requirements:
 function generateBasicQuestions(
   products: any[],
   tags: string[],
-  types: string[]
+  types: string[],
 ) {
   const questions: any[] = [];
 
   // Analyze price distribution by product type for smart budget questions
   const priceByType: Record<string, number[]> = {};
-  products.forEach(p => {
+  products.forEach((p) => {
     const type = p.productType;
     const price = parseFloat(p.variants?.edges?.[0]?.node?.price || 0);
     if (type && price > 0) {
@@ -1885,38 +2326,73 @@ function generateBasicQuestions(
     order: 0,
     conditionalRules: null,
     options: [
-      { text: "Something for everyday use", matchingTags: ["daily", "essential", "basic"], matchingTypes: [] },
-      { text: "A special occasion item", matchingTags: ["luxury", "premium", "special"], matchingTypes: [] },
-      { text: "A gift for someone", matchingTags: ["gift", "present"], matchingTypes: [] },
-      { text: "Something to treat myself", matchingTags: ["indulgent", "premium", "luxury"], matchingTypes: [] },
+      {
+        text: "Something for everyday use",
+        matchingTags: ["daily", "essential", "basic"],
+        matchingTypes: [],
+      },
+      {
+        text: "A special occasion item",
+        matchingTags: ["luxury", "premium", "special"],
+        matchingTypes: [],
+      },
+      {
+        text: "A gift for someone",
+        matchingTags: ["gift", "present"],
+        matchingTypes: [],
+      },
+      {
+        text: "Something to treat myself",
+        matchingTags: ["indulgent", "premium", "luxury"],
+        matchingTypes: [],
+      },
     ],
   });
 
   // Question 2: Budget (FIRST filter - most important for conditional logic)
   const prices = products
-    .map(p => parseFloat(p.variants?.edges?.[0]?.node?.price || 0))
-    .filter(p => p > 0);
+    .map((p) => parseFloat(p.variants?.edges?.[0]?.node?.price || 0))
+    .filter((p) => p > 0);
 
   if (prices.length > 0) {
     const avgPrice = prices.reduce((a, b) => a + b, 0) / prices.length;
     const budgetRanges = [
-      { max: avgPrice * 0.5, label: `Under $${Math.round(avgPrice * 0.5)}`, tags: ["budget", "affordable"] },
-      { min: avgPrice * 0.5, max: avgPrice, label: `$${Math.round(avgPrice * 0.5)} - $${Math.round(avgPrice)}`, tags: [] },
-      { min: avgPrice, max: avgPrice * 1.5, label: `$${Math.round(avgPrice)} - $${Math.round(avgPrice * 1.5)}`, tags: ["premium"] },
-      { min: avgPrice * 1.5, label: `Over $${Math.round(avgPrice * 1.5)}`, tags: ["luxury", "premium", "high-end"] },
+      {
+        max: avgPrice * 0.5,
+        label: `Under $${Math.round(avgPrice * 0.5)}`,
+        tags: ["budget", "affordable"],
+      },
+      {
+        min: avgPrice * 0.5,
+        max: avgPrice,
+        label: `$${Math.round(avgPrice * 0.5)} - $${Math.round(avgPrice)}`,
+        tags: [],
+      },
+      {
+        min: avgPrice,
+        max: avgPrice * 1.5,
+        label: `$${Math.round(avgPrice)} - $${Math.round(avgPrice * 1.5)}`,
+        tags: ["premium"],
+      },
+      {
+        min: avgPrice * 1.5,
+        label: `Over $${Math.round(avgPrice * 1.5)}`,
+        tags: ["luxury", "premium", "high-end"],
+      },
     ];
 
     // For each budget range, find product types that actually exist at that price
-    const budgetOptions = budgetRanges.map(range => {
+    const budgetOptions = budgetRanges.map((range) => {
       const affordableTypes = Object.entries(priceByType)
         .filter(([, prices]) => {
           const minPrice = Math.min(...prices);
           const maxPrice = Math.max(...prices);
-          
+
           // Check if this type has products in this price range
           if (range.max && !range.min) return minPrice <= range.max;
           if (range.min && !range.max) return maxPrice >= range.min;
-          if (range.min && range.max) return !(maxPrice < range.min || minPrice > range.max);
+          if (range.min && range.max)
+            return !(maxPrice < range.min || minPrice > range.max);
           return true;
         })
         .map(([type]) => type);
@@ -1942,7 +2418,7 @@ function generateBasicQuestions(
   // Question 3: Product Type (budget-aware using conditional logic)
   if (types.length > 1) {
     // Create budget-aware type options
-    const typeOptions = types.slice(0, 6).map(type => {
+    const typeOptions = types.slice(0, 6).map((type) => {
       const typePrices = priceByType[type] || [];
       const minTypePrice = typePrices.length > 0 ? Math.min(...typePrices) : 0;
       const maxTypePrice = typePrices.length > 0 ? Math.max(...typePrices) : 0;
@@ -1967,9 +2443,17 @@ function generateBasicQuestions(
   }
 
   // Question 4: Style/Preference (based on common tags)
-  const styleKeywords = ["modern", "classic", "vintage", "minimal", "bold", "natural", "organic"];
-  const availableStyles = tags.filter(tag =>
-    styleKeywords.some(keyword => tag.toLowerCase().includes(keyword))
+  const styleKeywords = [
+    "modern",
+    "classic",
+    "vintage",
+    "minimal",
+    "bold",
+    "natural",
+    "organic",
+  ];
+  const availableStyles = tags.filter((tag) =>
+    styleKeywords.some((keyword) => tag.toLowerCase().includes(keyword)),
   );
 
   if (availableStyles.length >= 2) {
@@ -1978,7 +2462,7 @@ function generateBasicQuestions(
       type: "multiple_choice",
       order: 3,
       conditionalRules: null,
-      options: availableStyles.slice(0, 4).map(styleTag => ({
+      options: availableStyles.slice(0, 4).map((styleTag) => ({
         text: styleTag.charAt(0).toUpperCase() + styleTag.slice(1),
         matchingTags: [styleTag],
         matchingTypes: [],
@@ -1993,10 +2477,26 @@ function generateBasicQuestions(
     order: 4,
     conditionalRules: null,
     options: [
-      { text: "Quality and durability", matchingTags: ["durable", "quality", "premium"], matchingTypes: [] },
-      { text: "Eco-friendly and sustainable", matchingTags: ["eco", "sustainable", "organic", "natural"], matchingTypes: [] },
-      { text: "Latest trends and styles", matchingTags: ["trending", "new", "modern"], matchingTypes: [] },
-      { text: "Best value for money", matchingTags: ["value", "affordable", "budget"], matchingTypes: [] },
+      {
+        text: "Quality and durability",
+        matchingTags: ["durable", "quality", "premium"],
+        matchingTypes: [],
+      },
+      {
+        text: "Eco-friendly and sustainable",
+        matchingTags: ["eco", "sustainable", "organic", "natural"],
+        matchingTypes: [],
+      },
+      {
+        text: "Latest trends and styles",
+        matchingTags: ["trending", "new", "modern"],
+        matchingTypes: [],
+      },
+      {
+        text: "Best value for money",
+        matchingTags: ["value", "affordable", "budget"],
+        matchingTypes: [],
+      },
     ],
   });
 

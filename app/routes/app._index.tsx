@@ -108,7 +108,7 @@ export default function Index() {
   const generateProduct = () => fetcher.submit({}, { method: "POST" });
 
   return (
-    <s-page heading="Shopify app template">
+    <s-page heading="Shopify app template" max-width="full">
       <s-button slot="primary-action" onClick={generateProduct}>
         Generate a product
       </s-button>

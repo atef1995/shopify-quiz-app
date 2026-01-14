@@ -111,6 +111,7 @@ export default function QuizAnalytics() {
     <s-page
       heading={`Analytics: ${quiz.title}`}
       backAction={{ onAction: () => navigate(`/app/quizzes/${quiz.id}/edit`) }}
+      max-width="full"
     >
       {/* Key Metrics */}
       <s-section heading="Performance Overview">

@@ -5,6 +5,29 @@
  * and subscription upgrades for the Quiz Builder app.
  *
  * Integrated with Shopify Billing API for payment collection.
+ *
+ * BILLING FLOW:
+ * 1. User clicks "Upgrade" button → app.billing.upgrade.tsx creates charge
+ * 2. User approves charge in Shopify admin → redirected to app.billing.callback.tsx
+ * 3. Callback verifies charge status → activates subscription in database
+ * 4. Usage tracking enforces limits at quiz submission (api.quiz.submit.tsx)
+ * 5. Monthly resets happen automatically when period expires
+ *
+ * IMPLEMENTATION STATUS:
+ * ✅ Database schema with Shopify charge tracking fields
+ * ✅ GraphQL mutations for creating/canceling charges (billing-api.server.ts)
+ * ✅ Upgrade flow with confirmation URL redirect
+ * ✅ Callback handler to activate subscriptions
+ * ✅ Cancel/downgrade functionality
+ * ✅ Usage limit enforcement at quiz submission
+ * ⚠️  Subscription verification relies on database status (should query Shopify API)
+ * ⚠️  No webhook handlers for subscription updates (SUBSCRIPTIONS_UPDATE webhook needed)
+ * ⚠️  Test mode hardcoded (isTest=true) - needs environment variable
+ *
+ * TODO: Add webhook handler for SUBSCRIPTION_BILLING_ATTEMPTS to detect payment failures
+ * TODO: Query Shopify API in getOrCreateSubscription to verify charge is still active
+ * TODO: Handle subscription pauses/freezes (FROZEN status)
+ * TODO: Add trial period logic (14 days free for all tiers)
  */
 
 import prisma from "../db.server";
@@ -43,8 +66,13 @@ export type SubscriptionTier = keyof typeof TIER_LIMITS;
  *
  * Date calculation properly handles month boundaries (e.g., Jan 31 + 1 month = Feb 28).
  *
+ * NOTE: Currently uses database status only. In production, should also verify
+ * subscription is still active in Shopify (charge not cancelled/expired).
+ * Use getActiveSubscriptions() from billing-api.server.ts to cross-check.
+ *
  * TODO: Add trial period logic (14 days free for all tiers)
  * TODO: Track signup date for cohort analysis
+ * TODO: Query Shopify API to verify subscription status matches database
  */
 export async function getOrCreateSubscription(shop: string) {
   let subscription = await prisma.subscription.findUnique({
@@ -54,12 +82,16 @@ export async function getOrCreateSubscription(shop: string) {
   if (!subscription) {
     // Create new free tier subscription
     const now = new Date();
-    
+
     // FIXED: Proper date math to avoid month boundary bugs
     // Example: Jan 31 + 1 month = Feb 28 (correct), not Mar 3
     // new Date(year, month, day) handles overflow properly:
     // - If day exceeds days in month, it uses last day of that month
-    const periodEnd = new Date(now.getFullYear(), now.getMonth() + 1, now.getDate());
+    const periodEnd = new Date(
+      now.getFullYear(),
+      now.getMonth() + 1,
+      now.getDate(),
+    );
 
     subscription = await prisma.subscription.create({
       data: {
@@ -106,12 +138,16 @@ export async function canCreateCompletion(shop: string): Promise<{
   // TODO: Add cron job to reset periods instead of doing it on-demand
   if (now > subscription.currentPeriodEnd) {
     // Reset usage for new period using proper date math
-    const newPeriodEnd = new Date(now.getFullYear(), now.getMonth() + 1, now.getDate());
-    
+    const newPeriodEnd = new Date(
+      now.getFullYear(),
+      now.getMonth() + 1,
+      now.getDate(),
+    );
+
     // Atomic update to prevent race condition where multiple requests
     // try to reset the period simultaneously
     const updated = await prisma.subscription.updateMany({
-      where: { 
+      where: {
         shop,
         currentPeriodEnd: { lt: now }, // Only update if period actually expired
       },
@@ -131,11 +167,12 @@ export async function canCreateCompletion(shop: string): Promise<{
         tier: subscription.tier,
       };
     }
-    
+
     // If another request already reset it, re-fetch the subscription
-    subscription = await prisma.subscription.findUnique({
-      where: { shop },
-    }) || subscription;
+    subscription =
+      (await prisma.subscription.findUnique({
+        where: { shop },
+      })) || subscription;
   }
 
   // Check usage limits
@@ -181,7 +218,10 @@ export async function incrementCompletionCount(shop: string) {
   } catch (error) {
     // Log error but don't throw - billing tracking failure shouldn't
     // block quiz completion (user already got their recommendations)
-    console.error(`[Billing] Failed to increment completion count for ${shop}:`, error);
+    console.error(
+      `[Billing] Failed to increment completion count for ${shop}:`,
+      error,
+    );
     // TODO: Send alert to monitoring service (Sentry, DataDog, etc.)
     throw error; // Re-throw so caller can handle
   }
@@ -200,12 +240,12 @@ export async function getUsageStats(shop: string) {
       : Math.round(
           (subscription.currentPeriodCompletions /
             tierLimit.monthlyCompletions) *
-            100
+            100,
         );
 
   const daysUntilReset = Math.ceil(
     (subscription.currentPeriodEnd.getTime() - Date.now()) /
-      (1000 * 60 * 60 * 24)
+      (1000 * 60 * 60 * 24),
   );
 
   return {
@@ -226,13 +266,13 @@ export async function getUsageStats(shop: string) {
  *
  * Creates a recurring charge using Shopify Billing API and updates
  * the subscription tier once the merchant approves payment.
- * 
+ *
  * @returns Object with confirmationUrl for redirect and subscriptionId
  */
 export async function upgradeSubscription(
   shop: string,
   newTier: SubscriptionTier,
-  admin: AdminApiContext
+  admin: AdminApiContext,
 ): Promise<{ confirmationUrl: string; subscriptionId: string }> {
   await getOrCreateSubscription(shop); // Ensure subscription exists
   const tierConfig = TIER_LIMITS[newTier];
@@ -244,7 +284,9 @@ export async function upgradeSubscription(
 
   // Free tier should use cancelSubscription instead
   if (tierConfig.price === 0) {
-    throw new Error("Free tier does not require billing. Use cancelSubscription.");
+    throw new Error(
+      "Free tier does not require billing. Use cancelSubscription.",
+    );
   }
 
   // Create recurring charge with Shopify Billing API
@@ -284,19 +326,23 @@ export async function upgradeSubscription(
           },
         ],
       },
-    }
+    },
   );
 
   const chargeData = await chargeResponse.json();
 
   if (chargeData.data?.appSubscriptionCreate?.userErrors?.length > 0) {
     const errors = chargeData.data.appSubscriptionCreate.userErrors;
-    const errorMessages = errors.map((e: { field?: string; message: string }) => e.message).join(", ");
+    const errorMessages = errors
+      .map((e: { field?: string; message: string }) => e.message)
+      .join(", ");
     throw new Error(`Billing API error: ${errorMessages}`);
   }
 
-  const subscriptionId = chargeData.data?.appSubscriptionCreate?.appSubscription?.id;
-  const confirmationUrl = chargeData.data?.appSubscriptionCreate?.confirmationUrl;
+  const subscriptionId =
+    chargeData.data?.appSubscriptionCreate?.appSubscription?.id;
+  const confirmationUrl =
+    chargeData.data?.appSubscriptionCreate?.confirmationUrl;
 
   if (!subscriptionId || !confirmationUrl) {
     throw new Error("Failed to create billing charge");
@@ -324,7 +370,7 @@ export async function upgradeSubscription(
  */
 export async function checkSubscriptionStatus(
   shop: string,
-  admin: AdminApiContext
+  admin: AdminApiContext,
 ) {
   const subscription = await getOrCreateSubscription(shop);
 
@@ -348,7 +394,7 @@ export async function checkSubscriptionStatus(
       variables: {
         id: subscription.shopifySubscriptionId,
       },
-    }
+    },
   );
 
   const data = await response.json();
@@ -378,10 +424,7 @@ export async function checkSubscriptionStatus(
 /**
  * Cancel subscription (downgrade to free tier)
  */
-export async function cancelSubscription(
-  shop: string,
-  admin: AdminApiContext
-) {
+export async function cancelSubscription(shop: string, admin: AdminApiContext) {
   const subscription = await getOrCreateSubscription(shop);
 
   // If there's an active Shopify subscription, cancel it
@@ -404,7 +447,7 @@ export async function cancelSubscription(
         variables: {
           id: subscription.shopifySubscriptionId,
         },
-      }
+      },
     );
   }
 
@@ -418,4 +461,3 @@ export async function cancelSubscription(
     },
   });
 }
-

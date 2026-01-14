@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type {
   ActionFunctionArgs,
   LoaderFunctionArgs,
@@ -6,6 +7,7 @@ import type {
 import { redirect, Form, useNavigation, Link } from "react-router";
 import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
+import { useAppBridge } from "@shopify/app-bridge-react";
 import prisma from "../db.server";
 
 /**
@@ -114,10 +116,27 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
 export default function NewQuiz() {
   const navigation = useNavigation();
+  const shopify = useAppBridge();
   const isSubmitting = navigation.state === "submitting";
+  const [showAILoading, setShowAILoading] = useState(false);
+  const [useAI, setUseAI] = useState(false);
+
+  // Show loading modal when AI generation is in progress
+  const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+    const formData = new FormData(e.currentTarget);
+    const useAIValue = formData.get("useAI") === "true";
+    
+    if (useAIValue) {
+      setShowAILoading(true);
+      shopify.toast.show(
+        "Generating quiz with AI... This may take 10-15 seconds",
+        { duration: 4000 }
+      );
+    }
+  };
 
   return (
-    <s-page heading="Create New Quiz" backAction={{ url: "/app/quizzes" }}>
+    <s-page heading="Create New Quiz" backAction={{ url: "/app/quizzes" }} max-width="full">
       <s-section>
         <s-stack direction="block" gap="base">
           <s-paragraph>
@@ -126,7 +145,7 @@ export default function NewQuiz() {
             automatically or build from scratch.
           </s-paragraph>
 
-          <Form method="post">
+          <Form method="post" onSubmit={handleSubmit}>
             <input type="hidden" name="action" value="create" />
             <s-stack direction="block" gap="base">
               {/* Basic Quiz Info */}
@@ -169,6 +188,7 @@ export default function NewQuiz() {
                     name="useAI"
                     value="true"
                     label="Use AI to generate quiz questions from my product catalog"
+                    onChange={(e) => setUseAI((e.target as HTMLInputElement).checked)}
                   />
 
                   <s-banner variant="info">
@@ -248,6 +268,46 @@ export default function NewQuiz() {
           </s-box>
         </s-stack>
       </s-section>
+
+      {/* AI Generation Loading Modal */}
+      {showAILoading && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: "rgba(0, 0, 0, 0.5)",
+            backdropFilter: "blur(4px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+          }}
+        >
+          <s-box
+            padding="large"
+            borderRadius="base"
+            background="surface"
+            style={{ maxWidth: "500px", width: "90%" }}
+          >
+            <s-stack direction="block" gap="base" align="center">
+              <s-spinner size="large" />
+              <s-text variant="heading-lg">Generating Your Quiz with AI</s-text>
+              <s-text variant="body-md" alignment="center">
+                Our AI is analyzing your product catalog and creating personalized quiz questions.
+                This typically takes 10-15 seconds.
+              </s-text>
+              <s-banner variant="info">
+                <s-text variant="body-sm">
+                  💡 Tip: You&apos;ll be able to customize all AI-generated questions after creation.
+                </s-text>
+              </s-banner>
+            </s-stack>
+          </s-box>
+        </div>
+      )}
     </s-page>
   );
 }
