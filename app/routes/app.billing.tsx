@@ -9,18 +9,19 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import {
   getUsageStats,
   TIER_LIMITS,
-  type SubscriptionTier,
 } from "../lib/billing.server";
 import { useEffect, useState } from "react";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import prisma from "../db.server";
 import { cancelAppSubscription } from "../lib/billing-api.server";
+import { logger } from "../lib/logger.server";
 
 /**
  * Action handler for subscription management (cancel/downgrade)
  */
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
+  const log = logger.child({ shop: session.shop, module: "billing" });
 
   const formData = await request.formData();
   const actionType = formData.get("action");
@@ -33,6 +34,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       });
 
       if (!subscription || !subscription.shopifySubscriptionId) {
+        log.warn("Cancel attempted but no active subscription found");
         return Response.json(
           { error: "No active subscription found" },
           { status: 404 },
@@ -57,9 +59,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         },
       });
 
+      log.info("Subscription cancelled successfully");
       return Response.json({ success: true });
     } catch (error) {
-      console.error("Failed to cancel subscription:", error);
+      log.error("Failed to cancel subscription", error);
       return Response.json(
         {
           error:
@@ -102,7 +105,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 /**
  * Get feature list for each tier
  */
-function getTierFeatures(tier: keyof typeof TIER_LIMITS) {
+function getTierFeatures(tier: keyof typeof TIER_LIMITS): string[] {
   const baseFeatures = [
     "Unlimited quizzes",
     "Email capture",
@@ -110,7 +113,7 @@ function getTierFeatures(tier: keyof typeof TIER_LIMITS) {
     "Product recommendations",
   ];
 
-  const tierFeatures = {
+  const tierFeatures: Record<keyof typeof TIER_LIMITS, string[]> = {
     free: [...baseFeatures, "100 completions/month"],
     growth: [
       ...baseFeatures,
@@ -193,7 +196,7 @@ export default function Billing() {
           {isOverLimit && (
             <s-banner variant="critical">
               <s-text variant="body-sm">
-                You've reached your monthly limit. Upgrade your plan to continue
+                You&apos;ve reached your monthly limit. Upgrade your plan to continue
                 collecting quiz completions.
               </s-text>
             </s-banner>
@@ -202,7 +205,7 @@ export default function Billing() {
           {isNearLimit && !isOverLimit && (
             <s-banner variant="warning">
               <s-text variant="body-sm">
-                You've used {usage.percentUsed}% of your monthly limit. Consider
+                You&apos;ve used {usage.percentUsed}% of your monthly limit. Consider
                 upgrading to avoid service interruption.
               </s-text>
             </s-banner>
@@ -240,27 +243,11 @@ export default function Billing() {
 
                 {usage.limit !== -1 && (
                   <>
-                    <div
-                      style={{
-                        width: "100%",
-                        height: "8px",
-                        backgroundColor: "#e5e7eb",
-                        borderRadius: "999px",
-                        overflow: "hidden",
-                      }}
-                    >
+                    <div className="progress-bar-container">
+                      {/* eslint-disable-next-line react/forbid-dom-props -- Dynamic width requires inline style */}
                       <div
-                        style={{
-                          width: `${Math.min(usage.percentUsed, 100)}%`,
-                          height: "100%",
-                          backgroundColor:
-                            usage.percentUsed >= 100
-                              ? "#dc2626"
-                              : usage.percentUsed >= 80
-                                ? "#f59e0b"
-                                : "#3b82f6",
-                          transition: "width 0.3s ease",
-                        }}
+                        className="progress-bar-fill"
+                        style={{ width: `${Math.min(usage.percentUsed, 100)}%` }}
                       />
                     </div>
                     <s-text variant="body-sm" color="subdued">
@@ -290,9 +277,7 @@ export default function Billing() {
                 borderWidth={tier.isCurrent ? "thick" : "base"}
                 borderRadius="base"
                 background={tier.isCurrent ? "subdued" : "surface"}
-                style={{
-                  borderColor: tier.isCurrent ? "#3b82f6" : undefined,
-                }}
+                className={tier.isCurrent ? "card-highlighted" : ""}
               >
                 <s-stack direction="block" gap="base">
                   {tier.isCurrent && (
@@ -310,7 +295,7 @@ export default function Billing() {
                   </s-stack>
 
                   <s-stack direction="block" gap="tight">
-                    {tier.features.map((feature, index) => (
+                    {tier.features.map((feature: string, index: number) => (
                       <s-stack
                         key={index}
                         direction="inline"
@@ -374,16 +359,16 @@ export default function Billing() {
             },
           ]}
         >
-          <s-box padding="base" style={{ backgroundColor: "white" }}>
+          <s-box padding="base" className="card-white-bg">
             <s-stack direction="block" gap="base">
               <s-text variant="heading-md">Cancel Subscription?</s-text>
               <s-text variant="body-md">
-                Are you sure you want to cancel your subscription? You'll be
+                Are you sure you want to cancel your subscription? You&apos;ll be
                 downgraded to the Free plan and will only be able to process 100
                 quiz completions per month.
               </s-text>
               <s-text variant="body-sm" color="subdued">
-                You'll receive a prorated refund for the remaining time in your
+                You&apos;ll receive a prorated refund for the remaining time in your
                 billing period.
               </s-text>
             </s-stack>

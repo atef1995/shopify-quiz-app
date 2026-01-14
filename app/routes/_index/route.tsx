@@ -2,6 +2,7 @@ import type { LoaderFunctionArgs } from "react-router";
 import { redirect, Form, useLoaderData } from "react-router";
 
 import { login } from "../../shopify.server";
+import { logger } from "../../lib/logger.server";
 
 import styles from "./styles.module.css";
 
@@ -17,13 +18,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // and it will use App Bridge for OAuth instead of regular HTTP redirect
   const shop = url.searchParams.get("shop");
   if (shop) {
-    console.log(`[AUTH] Shop parameter detected: ${shop}`);
-    console.log(`[AUTH] Redirecting to /app with all params: ${url.searchParams.toString()}`);
+    logger.debug("Shop parameter detected, redirecting to /app", { shop });
     throw redirect(`/app?${url.searchParams.toString()}`);
   }
 
   // No shop parameter - show login form for manual shop entry
-  console.log("[AUTH] No shop parameter, showing login form for manual entry");
+  logger.debug("No shop parameter, showing login form");
   return { showForm: Boolean(login) };
 };
 

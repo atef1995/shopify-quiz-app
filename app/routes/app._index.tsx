@@ -8,6 +8,7 @@ import { useFetcher, redirect } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
+import { logger } from "../lib/logger.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   await authenticate.admin(request);
@@ -18,7 +19,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const params = url.searchParams.toString();
   const redirectUrl = params ? `/app/quizzes?${params}` : "/app/quizzes";
 
-  console.log("[APP INDEX] Redirecting to quizzes with params:", params || "none");
+  logger.debug("Redirecting to quizzes", { hasParams: !!params });
   return redirect(redirectUrl);
 };
 
@@ -176,7 +177,7 @@ export default function Index() {
                 borderRadius="base"
                 background="subdued"
               >
-                <pre style={{ margin: 0 }}>
+                <pre className="code-block">
                   <code>{JSON.stringify(fetcher.data.product, null, 2)}</code>
                 </pre>
               </s-box>
@@ -188,7 +189,7 @@ export default function Index() {
                 borderRadius="base"
                 background="subdued"
               >
-                <pre style={{ margin: 0 }}>
+                <pre className="code-block">
                   <code>{JSON.stringify(fetcher.data.variant, null, 2)}</code>
                 </pre>
               </s-box>

@@ -10,6 +10,71 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import prisma from "../db.server";
 import OpenAI from "openai";
+import {
+  hasFeatureAccess,
+  canAddQuestion,
+} from "../lib/billing.server";
+import { logger } from "../lib/logger.server";
+
+// Type definitions for AI-generated questions and products
+interface ProductNode {
+  id: string;
+  title: string;
+  productType?: string;
+  tags?: string[];
+  variants?: {
+    edges?: Array<{
+      node?: {
+        price?: string;
+      };
+    }>;
+  };
+}
+
+interface ProductEdge {
+  node: ProductNode;
+}
+
+interface GeneratedOption {
+  text: string;
+  matchingTags?: string[];
+  matchingTypes?: string[];
+  budgetMin?: number;
+  budgetMax?: number;
+  priceRange?: { min: number; max: number };
+}
+
+interface GeneratedQuestion {
+  text: string;
+  type?: string;
+  order?: number;
+  conditionalRules?: Record<string, unknown> | null;
+  options: GeneratedOption[];
+}
+
+interface AIQuestionOption {
+  text?: string;
+  matchingTags?: string[];
+  matchingTypes?: string[];
+  budgetMin?: number;
+  budgetMax?: number;
+}
+
+interface AIQuestion {
+  text?: string;
+  type?: string;
+  order?: number;
+  conditionalRules?: Record<string, unknown> | null;
+  options?: AIQuestionOption[];
+}
+
+interface ProductMatching {
+  tags: string[];
+  types: string[];
+  budgetMin?: number;
+  budgetMax?: number;
+  priceRange?: { min: number; max: number };
+}
 
 // Initialize OpenAI client
 const openai = process.env.OPENAI_API_KEY
@@ -47,6 +112,10 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     throw new Response("Quiz not found", { status: 404 });
   }
 
+  // Check feature access
+  const aiAccess = await hasFeatureAccess(session.shop, "ai_generation");
+  const questionLimits = await canAddQuestion(session.shop, quizId);
+
   // Parse settings if they exist
   const settings = quiz.settings ? JSON.parse(quiz.settings) : {};
 
@@ -75,12 +144,9 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
               try {
                 return JSON.parse(o.productMatching);
               } catch (error) {
-                console.error(
-                  "Error parsing productMatching in loader:",
-                  error,
-                  "Data:",
-                  o.productMatching,
-                );
+                logger.error("Error parsing productMatching in loader", error, {
+                  optionId: o.id,
+                });
                 return null;
               }
             })()
@@ -88,6 +154,16 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
         order: o.order,
       })),
     })),
+    // Feature access flags
+    canUseAI: aiAccess.allowed,
+    aiRequiredTier: aiAccess.requiredTier,
+    questionLimits: {
+      canAdd: questionLimits.allowed,
+      currentCount: questionLimits.currentCount,
+      limit: questionLimits.limit,
+      reason: questionLimits.reason,
+    },
+    tierName: aiAccess.tierName,
   };
 };
 
@@ -99,6 +175,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   const quizId = params.id;
   const formData = await request.formData();
   const action = formData.get("action");
+  const log = logger.child({ shop: session.shop, quizId, module: "quiz-edit" });
 
   if (!quizId) {
     throw new Response("Quiz ID is required", { status: 400 });
@@ -129,6 +206,16 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   }
 
   if (action === "addQuestion") {
+    // Check question limit
+    const questionLimitCheck = await canAddQuestion(session.shop, quizId);
+    if (!questionLimitCheck.allowed) {
+      return {
+        success: false,
+        message: questionLimitCheck.reason,
+        upgradeRequired: true,
+      };
+    }
+
     const questionText = formData.get("questionText") as string;
     const questionType = formData.get("questionType") as string;
 
@@ -281,6 +368,16 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   }
 
   if (action === "generateAI") {
+    // Check AI feature access
+    const aiAccess = await hasFeatureAccess(session.shop, "ai_generation");
+    if (!aiAccess.allowed) {
+      return {
+        success: false,
+        message: `AI quiz generation requires the ${aiAccess.requiredTier} plan or higher.`,
+        upgradeRequired: true,
+      };
+    }
+
     // Generate quiz questions with AI or fallback to rule-based
     try {
       // Get quiz details for context
@@ -323,8 +420,8 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       );
 
       const productsData = await productsResponse.json();
-      const products =
-        productsData.data?.products?.edges?.map((edge: any) => edge.node) || [];
+      const products: ProductNode[] =
+        productsData.data?.products?.edges?.map((edge: ProductEdge) => edge.node) || [];
 
       if (products.length === 0) {
         return {
@@ -338,17 +435,16 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       const productTags = new Set<string>();
       const productTypes = new Set<string>();
 
-      products.forEach((product: any) => {
+      products.forEach((product: ProductNode) => {
         product.tags?.forEach((tag: string) => productTags.add(tag));
         if (product.productType) productTypes.add(product.productType);
       });
 
       // Try AI generation first, fall back to rule-based if unavailable
-      let questions;
-      let generationMethod = "rule-based";
+      let questions: GeneratedQuestion[];
 
       if (openai) {
-        console.log("🤖 Generating questions with OpenAI GPT-4o-mini...");
+        log.info("Generating questions with OpenAI GPT-4o-mini");
         try {
           questions = await generateQuestionsWithAI(
             products,
@@ -357,13 +453,10 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
             "professional",
             quiz.title,
           );
-          generationMethod = "AI";
-          console.log(`✅ AI generated ${questions.length} questions`);
-        } catch (aiError: any) {
-          console.error(
-            "❌ AI generation failed, falling back to rule-based:",
-            aiError.message,
-          );
+          log.info("AI generated questions", { count: questions.length });
+        } catch (aiError: unknown) {
+          const errorMessage = aiError instanceof Error ? aiError.message : "Unknown error";
+          log.error("AI generation failed, falling back to rule-based", { error: errorMessage });
           questions = generateBasicQuestions(
             products,
             Array.from(productTags),
@@ -371,9 +464,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
           );
         }
       } else {
-        console.log(
-          "⚠️ OpenAI API key not configured, using rule-based generation",
-        );
+        log.warn("OpenAI API key not configured, using rule-based generation");
         questions = generateBasicQuestions(
           products,
           Array.from(productTags),
@@ -404,7 +495,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
           const option = questionData.options[j];
 
           // Build product matching data with budget metadata
-          const productMatching: any = {
+          const productMatching: ProductMatching = {
             tags: option.matchingTags || [],
             types: option.matchingTypes || [],
           };
@@ -434,7 +525,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
         message: `Successfully generated ${questions.length} questions!`,
       };
     } catch (error) {
-      console.error("Generate AI error:", error);
+      log.error("Generate AI error", error);
       const errorMessage =
         error instanceof Error ? error.message : "Failed to generate questions";
       return {
@@ -490,6 +581,8 @@ export default function EditQuiz() {
     price: { min: number; max: number };
     featuredImage?: { url: string };
     priceRangeV2: { minVariantPrice: { amount: string; currencyCode: string } };
+    status?: string;
+    totalInventory?: number;
   }
 
   const [searchResults, setSearchResults] = useState<{
@@ -513,7 +606,8 @@ export default function EditQuiz() {
   // Product attributes state
   const [availableTags, setAvailableTags] = useState<string[]>([]);
   const [availableTypes, setAvailableTypes] = useState<string[]>([]);
-  const [attributesLoading, setAttributesLoading] = useState(false);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- Reserved for future loading indicator
+  const [_attributesLoading, setAttributesLoading] = useState(false);
   const [showAllTags, setShowAllTags] = useState<{ [key: string]: boolean }>(
     {},
   );
@@ -581,7 +675,7 @@ export default function EditQuiz() {
   // Show toast on action completion
   useEffect(() => {
     if (fetcher.data?.success) {
-      shopify.toast.show(fetcher.data.message);
+      shopify.toast.show(fetcher.data.message || "Success");
       // Sync status with server response
       if (fetcher.data.message?.includes("activated")) {
         setCurrentStatus("active");
@@ -589,7 +683,7 @@ export default function EditQuiz() {
         setCurrentStatus("draft");
       }
     } else if (fetcher.data?.success === false) {
-      shopify.toast.show(fetcher.data.message, { isError: true });
+      shopify.toast.show(fetcher.data.message || "An error occurred", { isError: true });
     }
   }, [fetcher.data, shopify]);
 
@@ -1067,7 +1161,7 @@ export default function EditQuiz() {
                             direction="inline"
                             gap="base"
                             align="center"
-                            style={{ flex: 1, cursor: "pointer" }}
+                            className="question-header"
                             onClick={() => toggleQuestion(question.id)}
                           >
                             <s-badge>Q{index + 1}</s-badge>
@@ -1468,44 +1562,14 @@ export default function EditQuiz() {
                                                   direction="inline"
                                                   gap="base"
                                                 >
-                                                  <s-box
-                                                    style={{
-                                                      width: "40px",
-                                                      height: "40px",
-                                                      backgroundColor:
-                                                        "#e3e3e3",
-                                                      borderRadius: "4px",
-                                                      animation:
-                                                        "pulse 1.5s ease-in-out infinite",
-                                                    }}
-                                                  />
+                                                  <s-box className="skeleton skeleton-image" />
                                                   <s-stack
                                                     direction="block"
                                                     gap="tight"
-                                                    style={{ flex: 1 }}
+                                                    className="flex-grow"
                                                   >
-                                                    <s-box
-                                                      style={{
-                                                        width: "60%",
-                                                        height: "16px",
-                                                        backgroundColor:
-                                                          "#e3e3e3",
-                                                        borderRadius: "4px",
-                                                        animation:
-                                                          "pulse 1.5s ease-in-out infinite",
-                                                      }}
-                                                    />
-                                                    <s-box
-                                                      style={{
-                                                        width: "40%",
-                                                        height: "14px",
-                                                        backgroundColor:
-                                                          "#e3e3e3",
-                                                        borderRadius: "4px",
-                                                        animation:
-                                                          "pulse 1.5s ease-in-out infinite",
-                                                      }}
-                                                    />
+                                                    <s-box className="skeleton skeleton-title" />
+                                                    <s-box className="skeleton skeleton-subtitle" />
                                                   </s-stack>
                                                 </s-stack>
                                               </s-box>
@@ -1527,10 +1591,7 @@ export default function EditQuiz() {
                                               <s-stack
                                                 direction="block"
                                                 gap="tight"
-                                                style={{
-                                                  maxHeight: "300px",
-                                                  overflowY: "auto",
-                                                }}
+                                                className="scrollable-list"
                                               >
                                                 {searchResults[question.id].map(
                                                   (product) => {
@@ -1550,15 +1611,7 @@ export default function EditQuiz() {
                                                             ? "success-subdued"
                                                             : "surface"
                                                         }
-                                                        style={{
-                                                          cursor: "pointer",
-                                                          border: isSelected
-                                                            ? "2px solid #008060"
-                                                            : "1px solid #c9cccf",
-                                                          transition:
-                                                            "all 0.2s ease",
-                                                          position: "relative",
-                                                        }}
+                                                        className={`product-selector-card ${isSelected ? "selected" : ""}`}
                                                         onClick={() =>
                                                           toggleProductSelection(
                                                             question.id,
@@ -1573,27 +1626,7 @@ export default function EditQuiz() {
                                                         >
                                                           {/* Checkbox indicator */}
                                                           <div
-                                                            style={{
-                                                              width: "20px",
-                                                              height: "20px",
-                                                              borderRadius:
-                                                                "4px",
-                                                              border: isSelected
-                                                                ? "2px solid #008060"
-                                                                : "2px solid #c9cccf",
-                                                              backgroundColor:
-                                                                isSelected
-                                                                  ? "#008060"
-                                                                  : "white",
-                                                              display: "flex",
-                                                              alignItems:
-                                                                "center",
-                                                              justifyContent:
-                                                                "center",
-                                                              flexShrink: 0,
-                                                              transition:
-                                                                "all 0.2s ease",
-                                                            }}
+                                                            className={`custom-checkbox ${isSelected ? "checked" : ""}`}
                                                           >
                                                             {isSelected && (
                                                               <svg
@@ -1623,20 +1656,13 @@ export default function EditQuiz() {
                                                                 product.imageAlt ||
                                                                 product.title
                                                               }
-                                                              style={{
-                                                                width: "40px",
-                                                                height: "40px",
-                                                                objectFit:
-                                                                  "cover",
-                                                                borderRadius:
-                                                                  "4px",
-                                                              }}
+                                                              className="product-image-sm"
                                                             />
                                                           )}
                                                           <s-stack
                                                             direction="block"
                                                             gap="tight"
-                                                            style={{ flex: 1 }}
+                                                            className="flex-grow"
                                                           >
                                                             <s-stack
                                                               direction="inline"
@@ -1684,16 +1710,13 @@ export default function EditQuiz() {
                                                                 <>
                                                                   {" • "}
                                                                   <span
-                                                                    style={{
-                                                                      color:
-                                                                        product.totalInventory ===
-                                                                        0
-                                                                          ? "#bf0711"
-                                                                          : product.totalInventory <
-                                                                              10
-                                                                            ? "#b98900"
-                                                                            : "#008060",
-                                                                    }}
+                                                                    className={
+                                                                      product.totalInventory === 0
+                                                                        ? "inventory-out"
+                                                                        : product.totalInventory < 10
+                                                                          ? "inventory-low"
+                                                                          : "inventory-ok"
+                                                                    }
                                                                   >
                                                                     {product.totalInventory ===
                                                                     0
@@ -1724,11 +1747,7 @@ export default function EditQuiz() {
                                                     padding="base"
                                                     borderWidth="base"
                                                     borderRadius="base"
-                                                    style={{
-                                                      backgroundColor:
-                                                        "#e0f5ef",
-                                                      borderColor: "#008060",
-                                                    }}
+                                                    className="success-highlight"
                                                   >
                                                     <s-stack
                                                       direction="inline"
@@ -1741,10 +1760,7 @@ export default function EditQuiz() {
                                                       />
                                                       <s-text
                                                         variant="body-sm"
-                                                        style={{
-                                                          fontWeight: "500",
-                                                          flex: 1,
-                                                        }}
+                                                        className="font-medium flex-grow"
                                                       >
                                                         {
                                                           selectedProducts[
@@ -1925,7 +1941,7 @@ export default function EditQuiz() {
             </s-text>
 
             <s-button
-              onclick={() => navigate(`/app/quizzes/${quiz.id}/analytics`)}
+              onClick={() => navigate(`/app/quizzes/${quiz.id}/analytics`)}
               variant="secondary"
               fullWidth
             >
@@ -1937,34 +1953,23 @@ export default function EditQuiz() {
 
       {/* Confirmation Modal */}
       {confirmModal.isOpen && (
+        // eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events -- Modal backdrop dismiss pattern
         <div
-          style={{
-            position: "fixed",
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            backgroundColor: "rgba(0, 0, 0, 0.5)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 1000,
-          }}
+          className="modal-backdrop"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="confirm-modal-title"
           onClick={() => setConfirmModal({ ...confirmModal, isOpen: false })}
         >
           <s-box
             padding="base"
             borderRadius="base"
             background="surface"
-            style={{
-              maxWidth: "500px",
-              width: "90%",
-              boxShadow: "0 8px 24px rgba(0, 0, 0, 0.15)",
-            }}
+            className="modal-container"
             onClick={(e) => e.stopPropagation()}
           >
             <s-stack direction="block" gap="base">
-              <s-text variant="heading-md">{confirmModal.title}</s-text>
+              <s-text id="confirm-modal-title" variant="heading-md">{confirmModal.title}</s-text>
               <s-text variant="body-md">{confirmModal.message}</s-text>
               <s-stack direction="inline" gap="base" align="end">
                 <s-button
@@ -1996,19 +2001,19 @@ export default function EditQuiz() {
  * Analyzes actual product prices to create budget-aware questions
  */
 async function generateQuestionsWithAI(
-  products: any[],
+  products: ProductNode[],
   tags: string[],
   types: string[],
   style: string,
   quizTitle: string,
-) {
+): Promise<GeneratedQuestion[]> {
   if (!openai) {
     throw new Error("OpenAI client not initialized");
   }
 
   // Calculate price ranges for budget questions
   const prices = products
-    .map((p) => parseFloat(p.variants?.edges?.[0]?.node?.price || 0))
+    .map((p) => parseFloat(p.variants?.edges?.[0]?.node?.price || "0"))
     .filter((p) => p > 0);
 
   const avgPrice =
@@ -2021,7 +2026,7 @@ async function generateQuestionsWithAI(
   const priceByType: Record<string, number[]> = {};
   products.forEach((p) => {
     const type = p.productType;
-    const price = parseFloat(p.variants?.edges?.[0]?.node?.price || 0);
+    const price = parseFloat(p.variants?.edges?.[0]?.node?.price || "0");
     if (type && price > 0) {
       if (!priceByType[type]) priceByType[type] = [];
       priceByType[type].push(price);
@@ -2174,12 +2179,12 @@ Requirements:
     }
 
     // Validate and sanitize the questions (initial pass)
-    const rawQuestions = parsedResponse.map((q: any, idx: number) => ({
+    const rawQuestions: AIQuestion[] = parsedResponse.map((q: AIQuestion, idx: number) => ({
       text: (q.text || `Question ${idx + 1}`).trim(),
       type: q.type || "multiple_choice",
       order: typeof q.order === "number" ? q.order : idx,
       conditionalRules: q.conditionalRules || null,
-      options: (q.options || []).map((opt: any) => ({
+      options: (q.options || []).map((opt: AIQuestionOption) => ({
         text: (opt.text || "Option").trim(),
         matchingTags: Array.isArray(opt.matchingTags)
           ? opt.matchingTags.filter((tag: string) => tags.includes(tag))
@@ -2194,13 +2199,13 @@ Requirements:
     }));
 
     // Deduplicate questions by normalized text and merge options when duplicates occur
-    const questionMap = new Map<string, any>();
+    const questionMap = new Map<string, AIQuestion>();
 
     for (const q of rawQuestions) {
       const key = (q.text || "").toLowerCase().replace(/\s+/g, " ").trim();
 
       // normalize options and dedupe them by text
-      const normalizedOpts = (q.options || []).map((o: any) => ({
+      const normalizedOpts: AIQuestionOption[] = (q.options || []).map((o: AIQuestionOption) => ({
         text: (o.text || "").trim(),
         matchingTags: Array.isArray(o.matchingTags) ? o.matchingTags : [],
         matchingTypes: Array.isArray(o.matchingTypes) ? o.matchingTypes : [],
@@ -2209,24 +2214,26 @@ Requirements:
       }));
 
       if (!questionMap.has(key)) {
-        const optMap = new Map<string, any>();
+        const optMap = new Map<string, AIQuestionOption>();
         for (const o of normalizedOpts) {
           const ok = (o.text || "").toLowerCase();
           if (!optMap.has(ok)) {
             optMap.set(ok, o);
           } else {
             const ex = optMap.get(ok);
-            ex.matchingTags = Array.from(
-              new Set([...(ex.matchingTags || []), ...(o.matchingTags || [])]),
-            );
-            ex.matchingTypes = Array.from(
-              new Set([
-                ...(ex.matchingTypes || []),
-                ...(o.matchingTypes || []),
-              ]),
-            );
-            ex.budgetMin = ex.budgetMin ?? o.budgetMin;
-            ex.budgetMax = ex.budgetMax ?? o.budgetMax;
+            if (ex) {
+              ex.matchingTags = Array.from(
+                new Set([...(ex.matchingTags || []), ...(o.matchingTags || [])]),
+              );
+              ex.matchingTypes = Array.from(
+                new Set([
+                  ...(ex.matchingTypes || []),
+                  ...(o.matchingTypes || []),
+                ]),
+              );
+              ex.budgetMin = ex.budgetMin ?? o.budgetMin;
+              ex.budgetMax = ex.budgetMax ?? o.budgetMax;
+            }
           }
         }
 
@@ -2238,8 +2245,8 @@ Requirements:
       } else {
         // merge options into existing question
         const existing = questionMap.get(key);
-        const existingOptMap = new Map(
-          (existing.options || []).map((o: any) => [
+        const existingOptMap = new Map<string, AIQuestionOption>(
+          (existing?.options || []).map((o: AIQuestionOption) => [
             (o.text || "").toLowerCase(),
             o,
           ]),
@@ -2247,28 +2254,33 @@ Requirements:
         for (const o of normalizedOpts) {
           const ok = (o.text || "").toLowerCase();
           if (!existingOptMap.has(ok)) {
-            existing.options.push(o);
+            if (existing) {
+              existing.options = existing.options || [];
+              existing.options.push(o);
+            }
             existingOptMap.set(ok, o);
           } else {
             const ex = existingOptMap.get(ok);
-            ex.matchingTags = Array.from(
-              new Set([...(ex.matchingTags || []), ...(o.matchingTags || [])]),
-            );
-            ex.matchingTypes = Array.from(
-              new Set([
-                ...(ex.matchingTypes || []),
-                ...(o.matchingTypes || []),
-              ]),
-            );
-            ex.budgetMin = ex.budgetMin ?? o.budgetMin;
-            ex.budgetMax = ex.budgetMax ?? o.budgetMax;
+            if (ex) {
+              ex.matchingTags = Array.from(
+                new Set([...(ex.matchingTags || []), ...(o.matchingTags || [])]),
+              );
+              ex.matchingTypes = Array.from(
+                new Set([
+                  ...(ex.matchingTypes || []),
+                  ...(o.matchingTypes || []),
+                ]),
+              );
+              ex.budgetMin = ex.budgetMin ?? o.budgetMin;
+              ex.budgetMax = ex.budgetMax ?? o.budgetMax;
+            }
           }
         }
       }
     }
 
-    let finalQuestions = Array.from(questionMap.values()).sort(
-      (a, b) => (a.order || 0) - (b.order || 0),
+    const finalQuestions = Array.from(questionMap.values()).sort(
+      (a, b) => ((a.order as number) || 0) - ((b.order as number) || 0),
     );
 
     // If deduplication reduced the count below 5, supplement with basic generated questions
@@ -2284,16 +2296,30 @@ Requirements:
       }
     }
 
-    console.log("AI generation stats:", {
+    logger.debug("AI generation stats", {
       model: completion.model,
       tokensUsed: completion.usage?.total_tokens,
       questionsGenerated: finalQuestions.length,
     });
 
-    return finalQuestions;
-  } catch (error: any) {
-    console.error("OpenAI API error:", error);
-    throw new Error(`AI generation failed: ${error.message}`);
+    // Convert AIQuestion to GeneratedQuestion, ensuring text is defined
+    return finalQuestions.map((q): GeneratedQuestion => ({
+      text: q.text || "Untitled Question",
+      type: q.type,
+      order: q.order,
+      conditionalRules: q.conditionalRules,
+      options: (q.options || []).map((o) => ({
+        text: o.text || "Option",
+        matchingTags: o.matchingTags,
+        matchingTypes: o.matchingTypes,
+        budgetMin: o.budgetMin,
+        budgetMax: o.budgetMax,
+      })),
+    }));
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : "Unknown error";
+    logger.error("OpenAI API error", error);
+    throw new Error(`AI generation failed: ${errorMessage}`);
   }
 }
 
@@ -2302,17 +2328,17 @@ Requirements:
  * Budget-aware fallback - analyzes price distribution by product type
  */
 function generateBasicQuestions(
-  products: any[],
+  products: ProductNode[],
   tags: string[],
   types: string[],
-) {
-  const questions: any[] = [];
+): GeneratedQuestion[] {
+  const questions: GeneratedQuestion[] = [];
 
   // Analyze price distribution by product type for smart budget questions
   const priceByType: Record<string, number[]> = {};
   products.forEach((p) => {
     const type = p.productType;
-    const price = parseFloat(p.variants?.edges?.[0]?.node?.price || 0);
+    const price = parseFloat(p.variants?.edges?.[0]?.node?.price || "0");
     if (type && price > 0) {
       if (!priceByType[type]) priceByType[type] = [];
       priceByType[type].push(price);
@@ -2351,7 +2377,7 @@ function generateBasicQuestions(
 
   // Question 2: Budget (FIRST filter - most important for conditional logic)
   const prices = products
-    .map((p) => parseFloat(p.variants?.edges?.[0]?.node?.price || 0))
+    .map((p) => parseFloat(p.variants?.edges?.[0]?.node?.price || "0"))
     .filter((p) => p > 0);
 
   if (prices.length > 0) {

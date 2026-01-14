@@ -1,0 +1,360 @@
+/**
+ * Global styles for QuizCraft App
+ * Following Shopify best practices - no inline styles
+ */
+
+/* ===== Layout Utilities ===== */
+
+/* Modal/Overlay backdrop */
+.modal-backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Modal container */
+.modal-container {
+  max-width: 500px;
+  width: 100%;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+/* ===== Progress Bar ===== */
+.progress-bar-container {
+  width: 100%;
+  height: 8px;
+  background-color: #e4e5e7;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background-color: #008060;
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+
+/* ===== Badge Utilities ===== */
+.badge-margin-left {
+  margin-left: 8px;
+}
+
+/* ===== Code/Pre Blocks ===== */
+.code-block {
+  margin: 0;
+}
+
+/* ===== Product Image Grid ===== */
+.product-image-container {
+  position: relative;
+  width: 48px;
+  height: 48px;
+  border-radius: 8px;
+  overflow: hidden;
+  background-color: #f6f6f7;
+  flex-shrink: 0;
+}
+
+.product-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.product-image-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: #f6f6f7;
+}
+
+/* Product card in selector */
+.product-card {
+  padding: 12px;
+  border: 1px solid #e1e3e5;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.product-card:hover {
+  border-color: #008060;
+  background-color: #f4faf8;
+}
+
+.product-card.selected {
+  border-color: #008060;
+  background-color: #f4faf8;
+}
+
+/* Product grid layout */
+.product-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+}
+
+/* ===== Selection States ===== */
+.selectable-item {
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.selectable-item:hover {
+  background-color: rgba(0, 0, 0, 0.02);
+}
+
+/* ===== Text Utilities ===== */
+.text-truncate {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.text-break {
+  word-break: break-word;
+}
+
+/* Monospace text for IDs */
+.text-mono {
+  font-family: "SF Mono", Monaco, "Courier New", monospace;
+  font-size: 12px;
+}
+
+/* ===== Stock Badge ===== */
+.stock-badge {
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.stock-badge.in-stock {
+  background-color: #aee9d1;
+  color: #0d5e38;
+}
+
+.stock-badge.low-stock {
+  background-color: #ffe5b4;
+  color: #8c5a00;
+}
+
+.stock-badge.out-of-stock {
+  background-color: #ffd6d6;
+  color: #c00;
+}
+
+/* ===== Mobile Responsive ===== */
+.mobile-only {
+  display: none;
+}
+
+.desktop-only {
+  display: block;
+}
+
+@media (max-width: 768px) {
+  .mobile-only {
+    display: block;
+  }
+  
+  .desktop-only {
+    display: none;
+  }
+  
+  .product-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ===== Loading States ===== */
+.loading-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(255, 255, 255, 0.8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+}
+
+/* ===== Empty States ===== */
+.empty-state {
+  padding: 48px 24px;
+  text-align: center;
+}
+
+.empty-state-icon {
+  font-size: 48px;
+  margin-bottom: 16px;
+  opacity: 0.5;
+}
+
+/* ===== Card Variants ===== */
+.card-highlighted {
+  border: 2px solid #008060;
+  background-color: #f4faf8;
+}
+
+.card-white-bg {
+  background-color: white;
+}
+
+/* ===== Flex Utilities ===== */
+.flex-grow {
+  flex-grow: 1;
+}
+
+.flex-shrink-0 {
+  flex-shrink: 0;
+}
+
+/* ===== Spacing Utilities ===== */
+.gap-tight {
+  gap: 4px;
+}
+
+.gap-base {
+  gap: 16px;
+}
+
+.gap-loose {
+  gap: 24px;
+}
+
+/* ===== Hidden but accessible ===== */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ===== Skeleton Loading Animation ===== */
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.skeleton {
+  background-color: #e3e3e3;
+  border-radius: 4px;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.skeleton-image {
+  width: 40px;
+  height: 40px;
+}
+
+.skeleton-title {
+  width: 60%;
+  height: 16px;
+}
+
+.skeleton-subtitle {
+  width: 40%;
+  height: 14px;
+}
+
+/* ===== Checkbox Custom ===== */
+.custom-checkbox {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  border: 2px solid #c9cccf;
+  background-color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: all 0.2s ease;
+}
+
+.custom-checkbox.checked {
+  border-color: #008060;
+  background-color: #008060;
+}
+
+/* ===== Product Card in Selector ===== */
+.product-selector-card {
+  cursor: pointer;
+  border: 1px solid #c9cccf;
+  transition: all 0.2s ease;
+  position: relative;
+}
+
+.product-selector-card:hover {
+  border-color: #008060;
+}
+
+.product-selector-card.selected {
+  border: 2px solid #008060;
+}
+
+/* ===== Product Image Small ===== */
+.product-image-sm {
+  width: 40px;
+  height: 40px;
+  object-fit: cover;
+  border-radius: 4px;
+}
+
+/* ===== Scrollable Container ===== */
+.scrollable-list {
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+/* ===== Success Box ===== */
+.success-highlight {
+  background-color: #e0f5ef;
+  border-color: #008060;
+}
+
+/* ===== Inventory Status Colors ===== */
+.inventory-out {
+  color: #bf0711;
+}
+
+.inventory-low {
+  color: #b98900;
+}
+
+.inventory-ok {
+  color: #008060;
+}
+
+/* ===== Question Header ===== */
+.question-header {
+  flex: 1;
+  cursor: pointer;
+}
+
+/* ===== Font Weight ===== */
+.font-medium {
+  font-weight: 500;
+}

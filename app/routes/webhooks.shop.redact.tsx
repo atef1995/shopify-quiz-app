@@ -2,6 +2,7 @@ import type { ActionFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import crypto from "crypto";
+import { logger } from "../lib/logger.server";
 
 /**
  * GDPR Webhook: shop/redact
@@ -15,7 +16,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const hmacHeader = request.headers.get('x-shopify-hmac-sha256');
   
   if (!hmacHeader) {
-    console.error('[GDPR Shop Redact] Missing HMAC header');
+    logger.error("GDPR Shop Redact: Missing HMAC header");
     return new Response("Bad Request", { status: 400 });
   }
 
@@ -37,12 +38,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       Buffer.from(hmacHeader, 'base64')
     );
   } catch (error) {
-    console.error('[GDPR Shop Redact] HMAC comparison error:', error);
+    logger.error("GDPR Shop Redact: HMAC comparison error", error);
     return new Response("Bad Request", { status: 400 });
   }
 
   if (!hmacValid) {
-    console.error('[GDPR Shop Redact] Invalid HMAC signature');
+    logger.error("GDPR Shop Redact: Invalid HMAC signature");
     return new Response("Bad Request", { status: 400 });
   }
 
@@ -57,8 +58,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   try {
     const { shop, payload } = await authenticate.webhook(clonedRequest);
 
-    console.log(`[GDPR Shop Redact] Starting data deletion for shop: ${shop}`);
-    console.log(`[GDPR Shop Redact] Payload:`, payload);
+    const log = logger.child({ shop: shop || "unknown", module: "gdpr-shop-redact" });
+    log.info("Starting data deletion");
 
     // Track what we're deleting for audit log
     // Track what we're deleting for audit log
@@ -99,7 +100,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       where: { shop },
     });
 
-    console.log(`[GDPR Shop Redact] Successfully deleted all data for ${shop}:`, {
+    log.info("Successfully deleted all shop data", {
       quizzes_deleted: deletedQuizzes.count,
       subscriptions_deleted: deletedSubscription.count,
       sessions_deleted: deletedSessions.count,
@@ -120,7 +121,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       headers: { "Content-Type": "application/json" },
     });
   } catch (error) {
-    console.error(`[GDPR Shop Redact Error] Failed to delete data:`, error);
+    logger.error("GDPR Shop Redact: Failed to delete data", error);
     return new Response(JSON.stringify({
       error: "Failed to redact shop data",
       message: error instanceof Error ? error.message : "Unknown error",

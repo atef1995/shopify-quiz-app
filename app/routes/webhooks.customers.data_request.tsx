@@ -2,6 +2,7 @@ import type { ActionFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import crypto from "crypto";
+import { logger } from "../lib/logger.server";
 
 /**
  * GDPR Webhook: customers/data_request
@@ -15,7 +16,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const hmacHeader = request.headers.get('x-shopify-hmac-sha256');
   
   if (!hmacHeader) {
-    console.error('[GDPR Data Request] Missing HMAC header');
+    logger.error("GDPR Data Request: Missing HMAC header");
     return new Response("Bad Request", { status: 400 });
   }
 
@@ -37,12 +38,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       Buffer.from(hmacHeader, 'base64')
     );
   } catch (error) {
-    console.error('[GDPR Data Request] HMAC comparison error:', error);
+    logger.error("GDPR Data Request: HMAC comparison error", error);
     return new Response("Bad Request", { status: 400 });
   }
 
   if (!hmacValid) {
-    console.error('[GDPR Data Request] Invalid HMAC signature');
+    logger.error("GDPR Data Request: Invalid HMAC signature");
     return new Response("Bad Request", { status: 400 });
   }
 
@@ -60,10 +61,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const customerId = payload.customer?.id;
     const customerEmail = payload.customer?.email;
 
-    console.log(`[GDPR Data Request] Shop: ${shop}, Customer ID: ${customerId}, Email: ${customerEmail}`);
+    const log = logger.child({ shop: shop || "unknown", module: "gdpr-data-request" });
+    log.info("Processing customer data request", { customerId, hasEmail: !!customerEmail });
 
     if (!customerEmail) {
-      console.log(`[GDPR Data Request] No email provided, cannot retrieve quiz data`);
+      log.info("No email provided, cannot retrieve quiz data");
       return new Response(null, { status: 200 });
     }
 
@@ -99,8 +101,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       })),
     };
 
-    console.log(`[GDPR Data Request] Found ${quizResults.length} quiz completions for ${customerEmail}`);
-    console.log(`[GDPR Data Export]`, JSON.stringify(customerData, null, 2));
+    log.info("Data export prepared", { quizCompletions: quizResults.length });
 
     // In production, you would:
     // 1. Store this export in a secure location
@@ -113,11 +114,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       headers: { "Content-Type": "application/json" },
     });
   } catch (error) {
-    console.error(`[GDPR Data Request Error]`, error);
-    return new Response(JSON.stringify({ error: "Failed to process data request" }), {
-      status: 500,
-      headers: { "Content-Type": "application/json" },
-    });
+    logger.error("GDPR Data Request: Failed to process", error);
   }
 };
 

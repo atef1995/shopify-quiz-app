@@ -1,12 +1,11 @@
-import { useEffect, useState } from "react";
-import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
-import { useLoaderData, Link, useFetcher, useNavigate } from "react-router";
+import { useState } from "react";
+import type { LoaderFunctionArgs, ActionFunctionArgs, HeadersFunction } from "react-router";
+import { useLoaderData, useFetcher, useNavigate } from "react-router";
 import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { useAppBridge } from "@shopify/app-bridge-react";
-import type { HeadersFunction } from "react-router";
 import prisma from "../db.server";
-import { getUsageStats } from "../lib/billing.server";
+import { getUsageStats, getQuizUsageStats } from "../lib/billing.server";
 
 /**
  * Action handler for quick status toggle and quiz deletion
@@ -52,8 +51,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
 
-  // Get usage stats for billing banner
+  // Get usage stats for billing banner (completions)
   const usageStats = await getUsageStats(session.shop);
+
+  // Get quiz count usage stats
+  const quizUsage = await getQuizUsageStats(session.shop);
 
   const quizzes = await prisma.quiz.findMany({
     where: {
@@ -100,11 +102,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   return {
     quizzes: quizzesWithStats,
     usage: usageStats,
+    quizUsage,
   };
 };
-
 export default function QuizzesIndex() {
-  const { quizzes, usage } = useLoaderData<typeof loader>();
+  const { quizzes, usage, quizUsage } = useLoaderData<typeof loader>();
   const navigate = useNavigate();
   const fetcher = useFetcher();
   const shopify = useAppBridge();
@@ -119,8 +121,14 @@ export default function QuizzesIndex() {
     quizTitle: "",
   });
 
+  // Completion usage
   const isNearLimit = usage.percentUsed >= 80;
   const isOverLimit = usage.percentUsed >= 100;
+
+  // Quiz count usage
+  const isNearQuizLimit = quizUsage.percentUsed >= 80;
+  const isAtQuizLimit =
+    !quizUsage.isUnlimited && quizUsage.currentCount >= quizUsage.limit;
 
   const copyQuizId = async (quizId: string) => {
     try {
@@ -166,13 +174,58 @@ export default function QuizzesIndex() {
 
   return (
     <s-page heading="Product Quiz Builder" max-width="full">
+      {/* Primary Action - Create Quiz */}
+      {!isAtQuizLimit && (
+        <s-button
+          slot="primary-action"
+          variant="primary"
+          onClick={() => navigate("/app/quizzes/new")}
+        >
+          Create Quiz
+        </s-button>
+      )}
 
-      {/* Usage Banner */}
+      {/* Quiz Count Usage Banner */}
+      {isAtQuizLimit && (
+        <s-section>
+          <s-banner variant="critical">
+            <s-stack direction="inline" gap="base" align="center">
+              <s-text variant="body-sm">
+                You&apos;ve reached your limit of {quizUsage.limit} quizzes on the{" "}
+                {quizUsage.tierName} plan.
+              </s-text>
+              <s-button
+                variant="primary"
+                onClick={() => navigate("/app/billing")}
+              >
+                Upgrade to Create More
+              </s-button>
+            </s-stack>
+          </s-banner>
+        </s-section>
+      )}
+
+      {isNearQuizLimit && !isAtQuizLimit && (
+        <s-section>
+          <s-banner variant="warning">
+            <s-text variant="body-sm">
+              You&apos;ve used {quizUsage.currentCount} of {quizUsage.limit} quizzes
+              ({quizUsage.percentUsed}%).{" "}
+              <s-link onClick={() => navigate("/app/billing")}>
+                Upgrade your plan
+              </s-link>{" "}
+              to create more quizzes.
+            </s-text>
+          </s-banner>
+        </s-section>
+      )}
+
+      {/* Completion Usage Banner */}
       {isOverLimit && (
         <s-section>
           <s-banner variant="critical">
             <s-text variant="body-sm">
-              You've reached your monthly limit of {usage.limit} completions.{" "}
+              You&apos;ve reached your monthly limit of {usage.limit} completions.{" "}
               <s-link onClick={() => navigate("/app/billing")}>
                 Upgrade your plan
               </s-link>{" "}
@@ -186,7 +239,7 @@ export default function QuizzesIndex() {
         <s-section>
           <s-banner variant="warning">
             <s-text variant="body-sm">
-              You've used {usage.currentUsage} of {usage.limit} monthly
+              You&apos;ve used {usage.currentUsage} of {usage.limit} monthly
               completions ({usage.percentUsed}%).{" "}
               <s-link onClick={() => navigate("/app/billing")}>
                 View billing
@@ -365,14 +418,7 @@ export default function QuizzesIndex() {
                       <s-table-cell>
                         <s-stack direction="inline" gap="tight" align="center">
                           <s-text
-                            style={{
-                              fontFamily: "monospace",
-                              fontSize: "12px",
-                              maxWidth: "120px",
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                              whiteSpace: "nowrap",
-                            }}
+                            className="text-mono text-truncate"
                             title={quiz.id}
                           >
                             {quiz.id}
@@ -433,9 +479,15 @@ export default function QuizzesIndex() {
                 </s-table-body>
               </s-table>
             </s-data-table>
-
+                  <s-button
+                onClick={() => navigate("/app/quizzes/new")}
+                variant="primary"
+                size="large"
+              >
+                Create Quiz
+              </s-button>
             {/* Mobile-friendly card layout (hidden on desktop) */}
-            <div className="mobile-quiz-list" style={{ display: "none" }}>
+            <div className="mobile-quiz-list mobile-only">
               <s-stack direction="block" gap="base">
                 {quizzes.map((quiz) => (
                   <s-box
@@ -445,7 +497,7 @@ export default function QuizzesIndex() {
                     borderRadius="base"
                     background="surface"
                     onClick={() => navigate(`/app/quizzes/${quiz.id}/edit`)}
-                    style={{ cursor: "pointer" }}
+                    className="selectable-item"
                   >
                     <s-stack direction="block" gap="base">
                       {/* Title and Status */}
@@ -560,20 +612,12 @@ export default function QuizzesIndex() {
 
       {/* Delete Confirmation Modal */}
       {confirmModal.isOpen && (
+        // eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events -- Modal backdrop dismiss pattern
         <div
-          style={{
-            position: "fixed",
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            backgroundColor: "rgba(0, 0, 0, 0.5)",
-            backdropFilter: "blur(4px)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 1000,
-          }}
+          className="modal-backdrop"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-modal-title"
           onClick={() =>
             setConfirmModal({ isOpen: false, quizId: "", quizTitle: "" })
           }
@@ -581,15 +625,12 @@ export default function QuizzesIndex() {
           <s-box
             padding="large"
             borderRadius="base"
-            style={{
-              maxWidth: "500px",
-              width: "90%",
-              backgroundColor: "white",
-            }}
-            onClick={(e: any) => e.stopPropagation()}
+            background="surface"
+            className="modal-container"
+            onClick={(e: React.MouseEvent) => e.stopPropagation()}
           >
             <s-stack direction="block" gap="base">
-              <s-text variant="heading-md">Delete Quiz?</s-text>
+              <s-text id="delete-modal-title" variant="heading-md">Delete Quiz?</s-text>
               <s-text variant="body-md">
                 Are you sure you want to delete &quot;{confirmModal.quizTitle}
                 &quot;? This action cannot be undone and will delete all

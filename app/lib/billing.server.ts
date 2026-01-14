@@ -35,31 +35,256 @@ import type { AdminApiContext } from "@shopify/shopify-app-react-router/server";
 
 /**
  * Subscription tier limits and pricing
+ *
+ * Features array defines what's available per tier:
+ * - basic: Core quiz functionality
+ * - email_capture: Collect customer emails
+ * - ai_generation: Generate quiz questions with AI
+ * - conditional_logic: Show/hide questions based on answers
+ * - advanced_analytics: Detailed funnel and conversion analytics
+ * - priority_support: Faster response times
+ * - custom_integrations: Webhooks, Zapier, etc.
  */
-export const TIER_LIMITS = {
+export const TIER_LIMITS: Record<string, {
+  name: string;
+  monthlyCompletions: number;
+  maxQuizzes: number;
+  maxQuestionsPerQuiz: number;
+  features: TierFeature[];
+  price: number;
+}> = {
   free: {
     name: "Free",
     monthlyCompletions: 100,
+    maxQuizzes: 3,
+    maxQuestionsPerQuiz: 10,
+    features: ["basic", "email_capture"],
     price: 0,
   },
   growth: {
     name: "Growth",
     monthlyCompletions: 1000,
+    maxQuizzes: 10,
+    maxQuestionsPerQuiz: 25,
+    features: ["basic", "email_capture", "ai_generation", "conditional_logic"],
     price: 29,
   },
   pro: {
     name: "Pro",
     monthlyCompletions: 10000,
+    maxQuizzes: 50,
+    maxQuestionsPerQuiz: 50,
+    features: [
+      "basic",
+      "email_capture",
+      "ai_generation",
+      "conditional_logic",
+      "advanced_analytics",
+      "priority_support",
+    ],
     price: 99,
   },
   enterprise: {
     name: "Enterprise",
     monthlyCompletions: -1, // Unlimited
+    maxQuizzes: -1, // Unlimited
+    maxQuestionsPerQuiz: -1, // Unlimited
+    features: [
+      "basic",
+      "email_capture",
+      "ai_generation",
+      "conditional_logic",
+      "advanced_analytics",
+      "priority_support",
+      "custom_integrations",
+    ],
     price: 299,
   },
-} as const;
+};
 
-export type SubscriptionTier = keyof typeof TIER_LIMITS;
+export type TierFeature =
+  | "basic"
+  | "email_capture"
+  | "ai_generation"
+  | "conditional_logic"
+  | "advanced_analytics"
+  | "priority_support"
+  | "custom_integrations";
+
+export type SubscriptionTier = "free" | "growth" | "pro" | "enterprise";
+
+/**
+ * Check if shop has access to a specific feature based on their tier
+ *
+ * @param shop - Shop domain
+ * @param feature - Feature to check access for
+ * @returns Object with access status and upgrade info
+ */
+export async function hasFeatureAccess(
+  shop: string,
+  feature: TierFeature,
+): Promise<{
+  allowed: boolean;
+  tier: string;
+  tierName: string;
+  requiredTier?: string;
+}> {
+  const subscription = await getOrCreateSubscription(shop);
+  const tierConfig = TIER_LIMITS[subscription.tier as SubscriptionTier];
+
+  const hasAccess = tierConfig.features.includes(feature);
+
+  // Find minimum tier that has this feature
+  let requiredTier: string | undefined;
+  if (!hasAccess) {
+    for (const [tierKey, config] of Object.entries(TIER_LIMITS)) {
+      if (config.features.includes(feature)) {
+        requiredTier = config.name;
+        break;
+      }
+    }
+  }
+
+  return {
+    allowed: hasAccess,
+    tier: subscription.tier,
+    tierName: tierConfig.name,
+    requiredTier,
+  };
+}
+
+/**
+ * Check if shop can create more quizzes based on their tier
+ *
+ * Returns warning at 80% of limit, blocks at 100%
+ *
+ * @param shop - Shop domain
+ * @returns Object with creation status, counts, and warning info
+ */
+export async function canCreateQuiz(shop: string): Promise<{
+  allowed: boolean;
+  warning: boolean;
+  warningMessage?: string;
+  reason?: string;
+  currentCount: number;
+  limit: number;
+  tier: string;
+  tierName: string;
+}> {
+  const subscription = await getOrCreateSubscription(shop);
+  const tierConfig = TIER_LIMITS[subscription.tier as SubscriptionTier];
+
+  // Count existing quizzes for this shop
+  const quizCount = await prisma.quiz.count({
+    where: { shop },
+  });
+
+  const limit = tierConfig.maxQuizzes;
+  const isUnlimited = limit === -1;
+
+  // Check if at limit
+  if (!isUnlimited && quizCount >= limit) {
+    return {
+      allowed: false,
+      warning: false,
+      reason: `You've reached your limit of ${limit} quizzes on the ${tierConfig.name} plan. Upgrade to create more quizzes.`,
+      currentCount: quizCount,
+      limit,
+      tier: subscription.tier,
+      tierName: tierConfig.name,
+    };
+  }
+
+  // Check if approaching limit (80%)
+  const warningThreshold = isUnlimited ? Infinity : Math.floor(limit * 0.8);
+  const isNearLimit = !isUnlimited && quizCount >= warningThreshold;
+
+  return {
+    allowed: true,
+    warning: isNearLimit,
+    warningMessage: isNearLimit
+      ? `You've used ${quizCount} of ${limit} quizzes. Consider upgrading soon.`
+      : undefined,
+    currentCount: quizCount,
+    limit: isUnlimited ? -1 : limit,
+    tier: subscription.tier,
+    tierName: tierConfig.name,
+  };
+}
+
+/**
+ * Check if a quiz can have more questions based on tier limits
+ *
+ * @param shop - Shop domain
+ * @param quizId - Quiz ID to check
+ * @returns Object with creation status and counts
+ */
+export async function canAddQuestion(
+  shop: string,
+  quizId: string,
+): Promise<{
+  allowed: boolean;
+  reason?: string;
+  currentCount: number;
+  limit: number;
+}> {
+  const subscription = await getOrCreateSubscription(shop);
+  const tierConfig = TIER_LIMITS[subscription.tier as SubscriptionTier];
+
+  // Count existing questions for this quiz
+  const questionCount = await prisma.question.count({
+    where: { quizId },
+  });
+
+  const limit = tierConfig.maxQuestionsPerQuiz;
+  const isUnlimited = limit === -1;
+
+  if (!isUnlimited && questionCount >= limit) {
+    return {
+      allowed: false,
+      reason: `You've reached the limit of ${limit} questions per quiz on the ${tierConfig.name} plan.`,
+      currentCount: questionCount,
+      limit,
+    };
+  }
+
+  return {
+    allowed: true,
+    currentCount: questionCount,
+    limit: isUnlimited ? -1 : limit,
+  };
+}
+
+/**
+ * Get quiz usage stats for a shop (for display in UI)
+ */
+export async function getQuizUsageStats(shop: string): Promise<{
+  currentCount: number;
+  limit: number;
+  percentUsed: number;
+  isUnlimited: boolean;
+  tier: string;
+  tierName: string;
+}> {
+  const subscription = await getOrCreateSubscription(shop);
+  const tierConfig = TIER_LIMITS[subscription.tier as SubscriptionTier];
+
+  const quizCount = await prisma.quiz.count({
+    where: { shop },
+  });
+
+  const limit = tierConfig.maxQuizzes;
+  const isUnlimited = limit === -1;
+
+  return {
+    currentCount: quizCount,
+    limit: isUnlimited ? -1 : limit,
+    percentUsed: isUnlimited ? 0 : Math.round((quizCount / limit) * 100),
+    isUnlimited,
+    tier: subscription.tier,
+    tierName: tierConfig.name,
+  };
+}
 
 /**
  * Get or create subscription for a shop

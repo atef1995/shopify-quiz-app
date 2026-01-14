@@ -10,6 +10,7 @@ import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { createAppSubscription } from "../lib/billing-api.server";
 import { TIER_LIMITS, type SubscriptionTier } from "../lib/billing.server";
+import { logger } from "../lib/logger.server";
 
 /**
  * Action handler for subscription upgrade
@@ -19,12 +20,14 @@ import { TIER_LIMITS, type SubscriptionTier } from "../lib/billing.server";
  */
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { admin, session, redirect } = await authenticate.admin(request);
+  const log = logger.child({ shop: session.shop, module: "billing-upgrade" });
 
   const formData = await request.formData();
   const tier = formData.get("tier") as SubscriptionTier;
 
   // Validate tier
   if (!tier || tier === "free" || !TIER_LIMITS[tier]) {
+    log.warn("Invalid subscription tier requested", { tier });
     return Response.json(
       { error: "Invalid subscription tier" },
       { status: 400 },
@@ -36,6 +39,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     // NOTE: Must use absolute URL, Shopify redirects merchant to this after approval
     const appUrl = process.env.SHOPIFY_APP_URL || "";
     const returnUrl = `${appUrl}/app/billing/callback?tier=${tier}`;
+
+    log.info("Creating subscription", { tier });
 
     // Create subscription charge in Shopify
     // NOTE: Using isTest=true for development, should be false in production
@@ -68,11 +73,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       },
     });
 
+    log.info("Subscription created, redirecting to confirmation", { subscriptionId: subscription.id });
+
     // Redirect merchant to Shopify confirmation page
     // IMPORTANT: Use redirect from authenticate.admin to maintain session
     return redirect(confirmationUrl);
   } catch (error) {
-    console.error("Failed to create subscription:", error);
+    log.error("Failed to create subscription", error);
 
     return Response.json(
       {

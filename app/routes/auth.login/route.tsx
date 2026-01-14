@@ -35,8 +35,6 @@ export default function Auth() {
   const url = typeof window !== 'undefined' ? new URL(window.location.href) : null;
   const isEmbedded = url ? (url.searchParams.get('host') !== null || url.searchParams.get('embedded') === '1') : false;
 
-  console.log('[AUTH LOGIN] Rendering auth form', { isEmbedded, hasErrors: !!errors.shop });
-
   return (
     <AppProvider embedded={isEmbedded} apiKey={apiKey}>
       <s-page>
@@ -47,7 +45,7 @@ export default function Auth() {
             label="Shop domain"
             details="example.myshopify.com"
             value={shop}
-            onChange={(e) => setShop(e.currentTarget.value)}
+            onChange={(e) => setShop((e.target as HTMLInputElement).value)}
             autocomplete="on"
             error={errors.shop}
           ></s-text-field>

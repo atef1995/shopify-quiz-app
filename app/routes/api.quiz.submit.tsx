@@ -2,50 +2,141 @@ import type { ActionFunctionArgs } from "react-router";
 import prisma from "../db.server";
 import { canCreateCompletion, incrementCompletionCount } from "../lib/billing.server";
 import { unauthenticated } from "../shopify.server";
+import {
+  getCorsHeaders,
+  createCorsErrorResponse,
+} from "../lib/cors.server";
+import {
+  checkRateLimit,
+  getClientIp,
+  createRateLimitResponse,
+} from "../lib/rate-limit.server";
+import { logger } from "../lib/logger.server";
+
+/**
+ * Type definitions for quiz submission
+ */
+interface QuestionOption {
+  id: string;
+  text: string;
+  imageUrl: string | null;
+  productMatching: string | null;
+  order: number;
+}
+
+interface Question {
+  id: string;
+  text: string;
+  type: string;
+  order: number;
+  options: QuestionOption[];
+}
+
+interface QuizWithQuestions {
+  id: string;
+  shop: string;
+  title: string;
+  description: string | null;
+  status: string;
+  settings: string | null;
+  questions: Question[];
+}
+
+interface Answer {
+  questionId: string;
+  optionId: string;
+}
+
+interface ShopifyProductNode {
+  id: string;
+  title: string;
+  handle: string;
+  description: string | null;
+  descriptionHtml: string | null;
+  onlineStoreUrl: string | null;
+  status: string;
+  featuredImage: { url: string } | null;
+  images: {
+    edges: Array<{
+      node: {
+        url: string;
+        altText: string | null;
+      };
+    }>;
+  };
+  priceRangeV2: {
+    minVariantPrice: {
+      amount: string;
+      currencyCode: string;
+    };
+  };
+  variants: {
+    edges: Array<{
+      node: {
+        id: string;
+      };
+    }>;
+  };
+}
+
+interface GraphQLResponse {
+  data?: {
+    products?: {
+      edges?: Array<{
+        node: ShopifyProductNode;
+      }>;
+    };
+  };
+  errors?: Array<{ message: string }>;
+}
 
 /**
  * Public API endpoint to submit quiz results from storefront
  *
  * This endpoint:
  * 1. Validates input (quiz ID, answers, email format)
- * 2. Checks usage limits for the shop
- * 3. Saves quiz completion data (transactional)
- * 4. Generates product recommendations based on answers
- * 5. Updates analytics atomically
- * 6. Returns recommended products
+ * 2. Applies rate limiting (5 submissions per minute per IP+quiz)
+ * 3. Checks usage limits for the shop
+ * 4. Saves quiz completion data (transactional)
+ * 5. Generates product recommendations based on answers
+ * 6. Updates analytics atomically
+ * 7. Returns recommended products
  *
- * TODO: Add rate limiting to prevent abuse (e.g., 10 submissions per minute per IP)
- * TODO: Add request signature validation to verify requests come from authorized storefronts
+ * Security:
+ * - Rate limited to prevent abuse
+ * - CORS restricted to shop domain
+ * - Input validation and sanitization
  */
 export const action = async ({ request }: ActionFunctionArgs) => {
+  // Store shop domain for error responses (null until we load quiz)
+  let shopDomain: string | null = null;
+
   try {
     const body = await request.json();
     const { quizId, email, answers } = body;
 
     // Validate required fields
     if (!quizId || !answers || !Array.isArray(answers)) {
-      return Response.json(
-        { error: "Quiz ID and answers are required" },
-        { status: 400 }
-      );
+      return createCorsErrorResponse(request, null, "Quiz ID and answers are required", 400);
+    }
+
+    // Rate limiting: 5 submissions per minute per IP + quiz combination
+    const clientIp = getClientIp(request);
+    const rateLimitKey = `quiz-submit:${quizId}:${clientIp}`;
+    if (!checkRateLimit(rateLimitKey, 5, 60000)) {
+      return createRateLimitResponse(60);
     }
 
     // Validate answers array length to prevent abuse
     if (answers.length === 0 || answers.length > 50) {
-      return Response.json(
-        { error: "Invalid number of answers. Must be between 1 and 50." },
-        { status: 400 }
-      );
+      return createCorsErrorResponse(request, null, "Invalid number of answers. Must be between 1 and 50.", 400);
     }
 
     // Validate email format if provided
     if (email) {
       const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
       if (!emailRegex.test(email)) {
-        return Response.json(
-          { error: "Invalid email format" },
-          { status: 400 }
-        );
+        return createCorsErrorResponse(request, null, "Invalid email format", 400);
       }
       
       // Sanitize email - trim and lowercase
@@ -53,20 +144,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       
       // Additional validation: max length
       if (sanitizedEmail.length > 254) {
-        return Response.json(
-          { error: "Email address too long" },
-          { status: 400 }
-        );
+        return createCorsErrorResponse(request, null, "Email address too long", 400);
       }
     }
 
     // Validate answer structure
     for (const answer of answers) {
       if (!answer.questionId || !answer.optionId) {
-        return Response.json(
-          { error: "Each answer must have questionId and optionId" },
-          { status: 400 }
-        );
+        return createCorsErrorResponse(request, null, "Each answer must have questionId and optionId", 400);
       }
     }
 
@@ -83,11 +168,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     });
 
     if (!quiz) {
-      return Response.json(
-        { error: "Quiz not found or not active" },
-        { status: 404 }
-      );
+      return createCorsErrorResponse(request, null, "Quiz not found or not active", 404);
     }
+
+    // Store shop domain for CORS headers
+    shopDomain = quiz.shop;
 
     // Check usage limits for this shop
     const usageCheck = await canCreateCompletion(quiz.shop);
@@ -99,7 +184,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           currentUsage: usageCheck.currentUsage,
           limit: usageCheck.limit,
         },
-        { status: 429 }
+        { 
+          status: 429,
+          headers: getCorsHeaders(request, shopDomain),
+        }
       );
     }
 
@@ -145,13 +233,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     // SQLite can't handle concurrent writes, so this must be outside the transaction
     try {
       await incrementCompletionCount(quiz.shop);
-    } catch (billingError) {
-      // Log but don't fail the quiz submission if billing update fails
-      console.error("Failed to update billing count:", billingError);
+    } catch {
+      // Billing update failure is non-critical - don't fail the submission
     }
-
-    // Get shop domain for CORS - restrict to actual shop only, not wildcard
-    const shopDomain = `https://${quiz.shop}`;
 
     return Response.json(
       {
@@ -160,23 +244,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         recommendedProducts,
       },
       {
-        headers: {
-          "Access-Control-Allow-Origin": shopDomain,
-          "Access-Control-Allow-Credentials": "true",
-        },
+        headers: getCorsHeaders(request, shopDomain!),
       }
     );
-  } catch (error: any) {
-    console.error("Error submitting quiz:", error);
-    return Response.json(
-      { error: "Failed to submit quiz" },
-      { 
-        status: 500,
-        headers: {
-          "Access-Control-Allow-Origin": "*", // Allow error responses from any origin
-        },
-      }
-    );
+  } catch (error) {
+    // Return error with safe CORS headers
+    return createCorsErrorResponse(request, shopDomain, "Failed to submit quiz", 500);
   }
 };
 
@@ -246,7 +319,9 @@ function extractPriceRange(text: string): { min?: number; max?: number } | null 
  * TODO: Cache product data to reduce GraphQL API calls (Redis/in-memory)
  * TODO: Add A/B testing for different recommendation algorithms
  */
-async function generateRecommendations(quiz: any, answers: any[], shop: string) {
+async function generateRecommendations(quiz: QuizWithQuestions, answers: Answer[], shop: string) {
+  const log = logger.child({ shop, quizId: quiz.id, module: "recommendations" });
+  
   // Collect all matching tags, types, and exact product IDs from selected options
   const matchingTags = new Set<string>();
   const matchingTypes = new Set<string>();
@@ -254,30 +329,28 @@ async function generateRecommendations(quiz: any, answers: any[], shop: string) 
   let maxPrice: number | null = null;
   let minPrice: number | null = null;
 
-  console.log("=== RECOMMENDATION DEBUG ===");
-  console.log("Quiz:", quiz.title);
-  console.log("Total answers:", answers.length);
+  log.debug("Starting recommendation generation", { quizTitle: quiz.title, answersCount: answers.length });
 
   answers.forEach((answer) => {
     // Find the selected option
-    const question = quiz.questions.find((q: any) => q.id === answer.questionId);
+    const question = quiz.questions.find((q: Question) => q.id === answer.questionId);
     if (!question) {
-      console.log("Question not found for answer:", answer);
+      log.debug("Question not found for answer", { answer });
       return;
     }
 
-    const option = question.options.find((o: any) => o.id === answer.optionId);
+    const option = question.options.find((o: QuestionOption) => o.id === answer.optionId);
     if (!option) {
-      console.log("Option not found:", answer.optionId);
+      log.debug("Option not found", { optionId: answer.optionId });
       return;
     }
     
-    console.log("Processing option:", option.text, "productMatching:", option.productMatching);
+    log.debug("Processing option", { optionText: option.text, hasProductMatching: !!option.productMatching });
     
     // Check if this is a budget/price question
     const isBudgetQuestion = /budget|price|spend|cost|afford|willing to pay/i.test(question.text);
     if (isBudgetQuestion) {
-      console.log("💰 Detected budget question:", question.text);
+      log.debug("Detected budget question", { questionText: question.text });
       const priceRange = extractPriceRange(option.text);
       if (priceRange) {
         if (priceRange.min !== undefined) {
@@ -286,55 +359,48 @@ async function generateRecommendations(quiz: any, answers: any[], shop: string) 
         if (priceRange.max !== undefined) {
           maxPrice = priceRange.max;
         }
-        console.log(`💵 Extracted price range from "${option.text}":`, { minPrice, maxPrice });
+        log.debug("Extracted price range", { optionText: option.text, minPrice, maxPrice });
       }
     }
     
     if (!option.productMatching) {
-      console.log("⚠️ No productMatching data for option:", option.text);
+      log.debug("No productMatching data for option", { optionText: option.text });
       return;
     }
 
     // Parse productMatching safely - wrapped in try-catch to prevent crashes
     try {
       const productMatching = JSON.parse(option.productMatching);
-      console.log("Parsed productMatching:", productMatching);
 
       // Prioritize exact product IDs (Advanced Product Matching)
       if (productMatching.productIds && Array.isArray(productMatching.productIds)) {
         productMatching.productIds.forEach((id: string) => exactProductIds.add(id));
-        console.log("✅ Added exact product IDs:", productMatching.productIds);
+        log.debug("Added exact product IDs", { count: productMatching.productIds.length });
       }
 
       // Add tags and types to our sets
       if (productMatching.tags) {
         productMatching.tags.forEach((tag: string) => matchingTags.add(tag));
-        console.log("Added tags:", productMatching.tags);
       }
       if (productMatching.types) {
         productMatching.types.forEach((type: string) => matchingTypes.add(type));
-        console.log("Added types:", productMatching.types);
       }
     } catch (error) {
-      console.error(
-        "❌ Error parsing productMatching for option:",
-        option.id,
-        "Data:",
-        option.productMatching,
-        error
-      );
+      log.error("Error parsing productMatching", error, { optionId: option.id });
       // Skip this option and continue with others
     }
   });
 
-  console.log("Final exactProductIds:", Array.from(exactProductIds));
-  console.log("Final matchingTags:", Array.from(matchingTags));
-  console.log("Final matchingTypes:", Array.from(matchingTypes));
-  console.log("Final price filter:", { minPrice, maxPrice });
+  log.debug("Final matching criteria", {
+    exactProductIds: exactProductIds.size,
+    matchingTags: matchingTags.size,
+    matchingTypes: matchingTypes.size,
+    priceFilter: { minPrice, maxPrice },
+  });
 
   // If exact product IDs are specified, query those first
   if (exactProductIds.size > 0) {
-    console.log("🎯 Using exact product ID matching (Advanced Product Matching)");
+    log.debug("Using exact product ID matching");
     try {
       const { admin } = await unauthenticated.admin(shop);
       
@@ -391,13 +457,13 @@ async function generateRecommendations(quiz: any, answers: any[], shop: string) 
       );
 
       const productsData = await response.json();
-      const exactProducts = productsData.data?.products?.edges
-        ?.map((edge: any) => edge.node)
-        .filter((product: any) => product.status === 'ACTIVE') || [];
+      const exactProducts = (productsData.data?.products?.edges
+        ?.map((edge: { node: ShopifyProductNode }) => edge.node)
+        .filter((product: ShopifyProductNode) => product.status === 'ACTIVE') || []) as ShopifyProductNode[];
 
       if (exactProducts.length > 0) {
-        console.log(`✅ Found ${exactProducts.length} exact product matches`);
-        return exactProducts.map((product: any) => ({
+        log.info("Found exact product matches", { count: exactProducts.length });
+        return exactProducts.map((product: ShopifyProductNode) => ({
           id: product.id,
           variantId: product.variants?.edges?.[0]?.node?.id || null,
           title: product.title,
@@ -408,7 +474,7 @@ async function generateRecommendations(quiz: any, answers: any[], shop: string) 
             product.priceRangeV2.minVariantPrice.amount
           ).toFixed(2)}`,
           imageUrl: product.featuredImage?.url || "https://via.placeholder.com/200",
-          images: product.images?.edges?.map((edge: any) => ({
+          images: product.images?.edges?.map((edge: { node: { url: string; altText: string | null } }) => ({
             url: edge.node.url,
             altText: edge.node.altText || product.title,
           })) || [],
@@ -416,7 +482,7 @@ async function generateRecommendations(quiz: any, answers: any[], shop: string) 
         }));
       }
     } catch (error) {
-      console.error("❌ Error fetching exact products:", error);
+      log.error("Error fetching exact products", error);
       // Fall through to tag/type matching
     }
   }
@@ -450,17 +516,17 @@ async function generateRecommendations(quiz: any, answers: any[], shop: string) 
     // Shopify search query syntax: variants.price:>=50 variants.price:<=100
     if (minPrice !== null && maxPrice !== null) {
       queryParts.push(`variants.price:>=${minPrice} variants.price:<=${maxPrice}`);
-      console.log(`💰 Adding price filter: $${minPrice}-$${maxPrice}`);
+      log.debug("Adding price filter range", { minPrice, maxPrice });
     } else if (minPrice !== null) {
       queryParts.push(`variants.price:>=${minPrice}`);
-      console.log(`💰 Adding min price filter: $${minPrice}+`);
+      log.debug("Adding min price filter", { minPrice });
     } else if (maxPrice !== null) {
       queryParts.push(`variants.price:<=${maxPrice}`);
-      console.log(`💰 Adding max price filter: up to $${maxPrice}`);
+      log.debug("Adding max price filter", { maxPrice });
     }
 
     const searchQuery = queryParts.length > 0 ? queryParts.join(" AND ") : "*";
-    console.log("🔍 Final search query:", searchQuery);
+    log.debug("Final search query", { searchQuery });
 
     // Query products from Shopify
     const productsResponse = await admin.graphql(
@@ -510,55 +576,55 @@ async function generateRecommendations(quiz: any, answers: any[], shop: string) 
       }
     );
 
-    const productsData = await productsResponse.json();
+    const productsData = await productsResponse.json() as GraphQLResponse;
 
-    console.log("GraphQL Response:", JSON.stringify(productsData, null, 2));
+    log.debug("GraphQL response received", { hasData: !!productsData.data });
 
     // Check for GraphQL errors
     if (productsData.errors) {
-      console.error("GraphQL errors:", productsData.errors);
+      log.error("GraphQL errors", { errors: productsData.errors });
       throw new Error("Failed to fetch products from Shopify");
     }
 
     const products =
-      productsData.data?.products?.edges?.map((edge: any) => edge.node) || [];
+      (productsData.data?.products?.edges?.map((edge: { node: ShopifyProductNode }) => edge.node) || []) as ShopifyProductNode[];
 
-    console.log("Total products found:", products.length);
+    log.debug("Products found", { total: products.length });
 
     // Filter to only active products (ACTIVE status means available for sale)
     let availableProducts = products.filter(
-      (product: any) => product.status === 'ACTIVE'
+      (product: ShopifyProductNode) => product.status === 'ACTIVE'
     );
 
-    console.log("Available products:", availableProducts.length);
+    log.debug("Available products after status filter", { count: availableProducts.length });
     
     // Apply client-side price filtering as additional safety layer
     // This ensures accurate filtering even if Shopify search query doesn't work perfectly
     if (minPrice !== null || maxPrice !== null) {
-      availableProducts = availableProducts.filter((product: any) => {
+      availableProducts = availableProducts.filter((product: ShopifyProductNode) => {
         const price = parseFloat(product.priceRangeV2.minVariantPrice.amount);
         
         if (minPrice !== null && price < minPrice) {
-          console.log(`❌ Filtered out ${product.title} - price $${price} below min $${minPrice}`);
+          log.debug("Filtered out product - below min price", { title: product.title, price, minPrice });
           return false;
         }
         
         if (maxPrice !== null && price > maxPrice) {
-          console.log(`❌ Filtered out ${product.title} - price $${price} above max $${maxPrice}`);
+          log.debug("Filtered out product - above max price", { title: product.title, price, maxPrice });
           return false;
         }
         
-        console.log(`✅ ${product.title} - price $${price} within range`);
+        log.debug("Product passed price filter", { title: product.title, price });
         return true;
       });
       
-      console.log("Products after price filtering:", availableProducts.length);
+      log.debug("Products after price filtering", { count: availableProducts.length });
     }
 
     // If we have matching products, return them
     if (availableProducts.length > 0) {
       // Return top 3-6 products with full details for hover interactions
-      return availableProducts.slice(0, 6).map((product: any) => ({
+      return availableProducts.slice(0, 6).map((product: ShopifyProductNode) => ({
         id: product.id,
         variantId: product.variants?.edges?.[0]?.node?.id || null,
         title: product.title,
@@ -569,7 +635,7 @@ async function generateRecommendations(quiz: any, answers: any[], shop: string) 
           product.priceRangeV2.minVariantPrice.amount
         ).toFixed(2)}`,
         imageUrl: product.featuredImage?.url || "https://via.placeholder.com/200",
-        images: product.images?.edges?.map((edge: any) => ({
+        images: product.images?.edges?.map((edge: { node: { url: string; altText: string | null } }) => ({
           url: edge.node.url,
           altText: edge.node.altText || product.title,
         })) || [],
@@ -577,7 +643,7 @@ async function generateRecommendations(quiz: any, answers: any[], shop: string) 
       }));
     }
 
-    console.log("⚠️ No products matched criteria, fetching fallback products");
+    log.info("No products matched criteria, fetching fallback products");
 
     // Fallback: If no products match, get some products without strict filtering
     // Remove price filter and try with just tags/types, or get any active products
@@ -626,21 +692,21 @@ async function generateRecommendations(quiz: any, answers: any[], shop: string) 
         `
       );
 
-      const fallbackData = await fallbackResponse.json();
+      const fallbackData = await fallbackResponse.json() as GraphQLResponse;
       
       if (fallbackData.errors) {
-        console.error("GraphQL errors in fallback:", fallbackData.errors);
+        log.error("GraphQL errors in fallback query", { errors: fallbackData.errors });
         throw new Error("Failed to fetch fallback products");
       }
 
       const fallbackProducts =
-        fallbackData.data?.products?.edges
-          ?.map((edge: any) => edge.node)
-          .filter((product: any) => product.status === 'ACTIVE') || [];
+        (fallbackData.data?.products?.edges
+          ?.map((edge: { node: ShopifyProductNode }) => edge.node)
+          .filter((product: ShopifyProductNode) => product.status === 'ACTIVE') || []) as ShopifyProductNode[];
 
       if (fallbackProducts.length > 0) {
-        console.log(`✅ Returning ${fallbackProducts.length} fallback products`);
-        return fallbackProducts.map((product: any) => ({
+        log.info("Returning fallback products", { count: fallbackProducts.length });
+        return fallbackProducts.map((product: ShopifyProductNode) => ({
           id: product.id,
           variantId: product.variants?.edges?.[0]?.node?.id || null,
           title: product.title,
@@ -651,7 +717,7 @@ async function generateRecommendations(quiz: any, answers: any[], shop: string) 
             product.priceRangeV2.minVariantPrice.amount
           ).toFixed(2)}`,
           imageUrl: product.featuredImage?.url || "https://via.placeholder.com/200",
-          images: product.images?.edges?.map((edge: any) => ({
+          images: product.images?.edges?.map((edge: { node: { url: string; altText: string | null } }) => ({
             url: edge.node.url,
             altText: edge.node.altText || product.title,
           })) || [],
@@ -659,35 +725,45 @@ async function generateRecommendations(quiz: any, answers: any[], shop: string) 
         }));
       }
     } catch (fallbackError) {
-      console.error("❌ Fallback query failed:", fallbackError);
       // Continue to return empty array below
     }
 
-    // Last resort: return empty array with helpful message
-    console.log("⚠️ No products available to recommend - returning empty array");
+    // Last resort: return empty array
     return [];
-  } catch (error) {
-    console.error("Error fetching product recommendations:", error);
+  } catch {
     // Return empty array instead of crashing
     return [];
   }
 }
 
 // Handle CORS preflight
-// NOTE: Preflight requests don't have quiz context, so we allow all origins for OPTIONS
-// Actual POST requests are restricted to shop domain in the action handler
+// NOTE: For preflight, we allow myshopify.com domains broadly since we don't know the quiz yet.
+// The actual POST request has stricter shop-specific CORS validation.
 export const loader = async ({ request }: { request: Request }) => {
   const origin = request.headers.get("Origin") || "";
   
-  // Check if origin is a valid Shopify shop domain
-  const isShopifyDomain = origin.endsWith(".myshopify.com") || 
-                          origin.includes("shopify.com");
+  // Only allow Shopify storefront origins for preflight
+  const isShopifyDomain = origin.endsWith(".myshopify.com");
+  
+  // For preflight, be more permissive but still exclude non-https origins
+  let allowOrigin = origin;
+  if (!isShopifyDomain) {
+    try {
+      const originUrl = new URL(origin);
+      // Allow https custom domains (could be custom storefront domains)
+      if (originUrl.protocol !== "https:") {
+        allowOrigin = "https://example.myshopify.com"; // Safe fallback
+      }
+    } catch {
+      allowOrigin = "https://example.myshopify.com"; // Invalid origin
+    }
+  }
   
   return Response.json(
     {},
     {
       headers: {
-        "Access-Control-Allow-Origin": isShopifyDomain ? origin : "*",
+        "Access-Control-Allow-Origin": allowOrigin,
         "Access-Control-Allow-Methods": "POST, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type",
         "Access-Control-Allow-Credentials": "true",

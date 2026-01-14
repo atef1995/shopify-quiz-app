@@ -50,7 +50,9 @@ export async function createAppSubscription(
   admin: any, // Shopify admin client from authenticate.admin()
   tier: Exclude<SubscriptionTier, "free">, // Can't create charge for free tier
   returnUrl: string,
-  isTest: boolean = true,
+  // NOTE: Default to test mode unless SHOPIFY_BILLING_TEST explicitly set to "false"
+  // This prevents accidental real charges during development
+  isTest: boolean = process.env.SHOPIFY_BILLING_TEST !== "false",
 ) {
   const tierConfig = TIER_LIMITS[tier];
 

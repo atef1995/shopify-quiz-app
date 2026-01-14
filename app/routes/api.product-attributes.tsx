@@ -1,5 +1,6 @@
 import type { LoaderFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
+import { logger } from "../lib/logger.server";
 
 /**
  * API endpoint to fetch unique product tags and types from the store
@@ -8,7 +9,8 @@ import { authenticate } from "../shopify.server";
  * product matching rules for quiz options
  */
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { admin } = await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
+  const log = logger.child({ shop: session.shop, module: "api-product-attributes" });
   
   try {
     const url = new URL(request.url);
@@ -34,10 +36,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       }
     );
 
-    const productsData = await productsResponse.json();
+    const productsData = await productsResponse.json() as { data?: { products?: { edges?: unknown[] } }; errors?: unknown[] };
     
     if (productsData.errors) {
-      console.error("GraphQL errors:", productsData.errors);
+      log.error("GraphQL errors fetching product attributes", { errors: productsData.errors });
       return Response.json(
         { error: "Failed to fetch product attributes" },
         { status: 500 }
@@ -76,10 +78,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       totalProducts: products.length,
     });
 
-  } catch (error: any) {
-    console.error("Error fetching product attributes:", error);
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : "Unknown error";
+    log.error("Error fetching product attributes", error);
     return Response.json(
-      { error: error.message || "Failed to fetch product attributes" },
+      { error: errorMessage || "Failed to fetch product attributes" },
       { status: 500 }
     );
   }

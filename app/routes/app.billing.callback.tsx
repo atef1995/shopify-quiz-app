@@ -9,6 +9,7 @@ import type { LoaderFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { checkSubscriptionStatus } from "../lib/billing-api.server";
+import { logger } from "../lib/logger.server";
 
 /**
  * Loader handler for billing callback
@@ -18,6 +19,7 @@ import { checkSubscriptionStatus } from "../lib/billing-api.server";
  */
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session, redirect } = await authenticate.admin(request);
+  const log = logger.child({ shop: session.shop, module: "billing-callback" });
 
   try {
     // Get tier from query params (passed from upgrade route)
@@ -25,7 +27,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     const tier = url.searchParams.get("tier");
 
     if (!tier) {
-      console.error("Missing tier parameter in callback URL");
+      log.error("Missing tier parameter in callback URL");
       return redirect("/app/billing?status=error");
     }
 
@@ -35,7 +37,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     });
 
     if (!subscription || !subscription.shopifySubscriptionId) {
-      console.error("No pending subscription found for shop:", session.shop);
+      log.error("No pending subscription found");
       return redirect("/app/billing?status=error");
     }
 
@@ -60,6 +62,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         },
       });
 
+      log.info("Subscription activated", { tier });
       return redirect("/app/billing?status=success");
     } else {
       // Subscription not approved or declined
@@ -71,10 +74,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         },
       });
 
+      log.info("Subscription declined");
       return redirect("/app/billing?status=declined");
     }
   } catch (error) {
-    console.error("Billing callback error:", error);
+    log.error("Billing callback error", error);
     return redirect("/app/billing?status=error");
   }
 };

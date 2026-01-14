@@ -2,6 +2,7 @@ import type { ActionFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import OpenAI from "openai";
+import { logger } from "../lib/logger.server";
 
 // Initialize OpenAI client
 const openai = process.env.OPENAI_API_KEY
@@ -28,6 +29,7 @@ const openai = process.env.OPENAI_API_KEY
  */
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
+  const log = logger.child({ shop: session.shop, module: "quiz-generate" });
 
   try {
     const formData = await request.formData();
@@ -95,7 +97,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     
     // Check for GraphQL errors before processing data
     if (productsData.errors && Array.isArray(productsData.errors)) {
-      console.error("[Quiz Generate] GraphQL errors:", productsData.errors);
+      log.error("GraphQL errors fetching products", { errors: productsData.errors });
       return Response.json(
         { 
           error: "Failed to fetch products from Shopify", 
@@ -128,7 +130,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     let questions;
     
     if (openai) {
-      console.log("🤖 Generating questions with OpenAI GPT-4o-mini...");
+      log.info("Generating questions with OpenAI GPT-4o-mini");
       try {
         questions = await generateQuestionsWithAI(
           products,
@@ -137,9 +139,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           style,
           quiz.title
         );
-        console.log(`✅ AI generated ${questions.length} questions`);
-      } catch (aiError: any) {
-        console.error("❌ AI generation failed, falling back to rule-based:", aiError.message);
+        log.info("AI generated questions", { count: questions.length });
+      } catch (aiError: unknown) {
+        const errorMessage = aiError instanceof Error ? aiError.message : "Unknown error";
+        log.error("AI generation failed, falling back to rule-based", { error: errorMessage });
         questions = generateQuestionsFromProducts(
           products,
           Array.from(productTags),
@@ -148,7 +151,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         );
       }
     } else {
-      console.log("⚠️ OpenAI API key not configured, using rule-based generation");
+      log.warn("OpenAI API key not configured, using rule-based generation");
       questions = generateQuestionsFromProducts(
         products,
         Array.from(productTags),
@@ -194,10 +197,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       questionsCount: questions.length,
     });
 
-  } catch (error: any) {
-    console.error("AI generation error:", error);
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : "Unknown error";
+    log.error("AI generation error", error);
     return Response.json(
-      { error: error.message || "Failed to generate quiz" },
+      { error: errorMessage || "Failed to generate quiz" },
       { status: 500 }
     );
   }
@@ -337,16 +341,17 @@ Requirements:
       })),
     }));
 
-    console.log("AI generation stats:", {
+    logger.debug("AI generation stats", {
       model: completion.model,
       tokensUsed: completion.usage?.total_tokens,
       questionsGenerated: questions.length,
     });
 
     return questions;
-  } catch (error: any) {
-    console.error("OpenAI API error:", error);
-    throw new Error(`AI generation failed: ${error.message}`);
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : "Unknown error";
+    logger.error("OpenAI API error", error);
+    throw new Error(`AI generation failed: ${errorMessage}`);
   }
 }
 

@@ -1,5 +1,6 @@
 import type { LoaderFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
+import { logger } from "../lib/logger.server";
 
 /**
  * API endpoint to fetch products for quiz option matching
@@ -9,6 +10,7 @@ import { authenticate } from "../shopify.server";
  */
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
+  const log = logger.child({ shop: session.shop, module: "api-products" });
   
   try {
     const url = new URL(request.url);
@@ -70,10 +72,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       }
     );
 
-    const productsData = await productsResponse.json();
+    const productsData = await productsResponse.json() as { data?: { products?: { edges?: unknown[] } }; errors?: unknown[] };
     
     if (productsData.errors) {
-      console.error("GraphQL errors:", productsData.errors);
+      log.error("GraphQL errors fetching products", { errors: productsData.errors });
       return Response.json(
         { error: "Failed to fetch products" },
         { status: 500 }
@@ -104,10 +106,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       query: query,
     });
 
-  } catch (error: any) {
-    console.error("Error fetching products:", error);
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : "Unknown error";
+    log.error("Error fetching products", error);
     return Response.json(
-      { error: error.message || "Failed to fetch products" },
+      { error: errorMessage || "Failed to fetch products" },
       { status: 500 }
     );
   }

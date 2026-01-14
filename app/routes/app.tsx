@@ -4,18 +4,17 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import { AppProvider } from "@shopify/shopify-app-react-router/react";
 
 import { authenticate } from "../shopify.server";
+import { logger } from "../lib/logger.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
 
   // Debug logging to understand what parameters we're receiving
-  console.log("[APP] /app route accessed");
-  console.log("[APP] URL:", url.href);
-  console.log("[APP] Params:", {
+  logger.debug("App route accessed", {
     shop: url.searchParams.get("shop"),
-    host: url.searchParams.get("host"),
+    hasHost: !!url.searchParams.get("host"),
     embedded: url.searchParams.get("embedded"),
-    hmac: url.searchParams.get("hmac") ? "present" : "missing"
+    hasHmac: !!url.searchParams.get("hmac"),
   });
 
   // This will either succeed (if session exists) or throw OAuth redirect

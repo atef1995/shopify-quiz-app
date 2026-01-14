@@ -2,6 +2,7 @@ import type { ActionFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import crypto from "crypto";
+import { logger } from "../lib/logger.server";
 
 /**
  * GDPR Webhook: customers/redact
@@ -15,7 +16,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const hmacHeader = request.headers.get('x-shopify-hmac-sha256');
   
   if (!hmacHeader) {
-    console.error('[GDPR Customer Redact] Missing HMAC header');
+    logger.error("GDPR Customer Redact: Missing HMAC header");
     return new Response("Bad Request", { status: 400 });
   }
 
@@ -37,12 +38,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       Buffer.from(hmacHeader, 'base64')
     );
   } catch (error) {
-    console.error('[GDPR Customer Redact] HMAC comparison error:', error);
+    logger.error("GDPR Customer Redact: HMAC comparison error", error);
     return new Response("Bad Request", { status: 400 });
   }
 
   if (!hmacValid) {
-    console.error('[GDPR Customer Redact] Invalid HMAC signature');
+    logger.error("GDPR Customer Redact: Invalid HMAC signature");
     return new Response("Bad Request", { status: 400 });
   }
 
@@ -55,13 +56,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   });
 
   try {
-    const { shop, payload } = await authenticate.webhook(clonedRequest);    const customerId = payload.customer?.id;
+    const { shop, payload } = await authenticate.webhook(clonedRequest);
+    const customerId = payload.customer?.id;
     const customerEmail = payload.customer?.email;
 
-    console.log(`[GDPR Customer Redact] Shop: ${shop}, Customer ID: ${customerId}, Email: ${customerEmail}`);
+    const log = logger.child({ shop: shop || "unknown", module: "gdpr-customer-redact" });
+    log.info("Processing customer redaction", { customerId, hasEmail: !!customerEmail });
 
     if (!customerEmail) {
-      console.log(`[GDPR Customer Redact] No email provided, skipping deletion`);
+      log.info("No email provided, skipping deletion");
       return new Response(JSON.stringify({ success: true, message: "No email to redact" }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
@@ -79,7 +82,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       },
     });
 
-    console.log(`[GDPR Customer Redact] Successfully deleted ${deletedResults.count} quiz results for ${customerEmail}`);
+    log.info("Successfully deleted customer quiz results", { deletedCount: deletedResults.count });
 
     // NOTE: QuizAnalytics contains aggregated data without PII
     // We don't need to modify analytics as they don't contain customer-identifiable information
@@ -93,10 +96,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       headers: { "Content-Type": "application/json" },
     });
   } catch (error) {
-    console.error(`[GDPR Customer Redact Error]`, error);
+    logger.error("GDPR Customer Redact: Failed to process", error);
     return new Response(JSON.stringify({
-      error: "Failed to redact customer data",
-      message: error instanceof Error ? error.message : "Unknown error",
+      error: "Internal server error",
     }), {
       status: 500,
       headers: { "Content-Type": "application/json" },
