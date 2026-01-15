@@ -1,7 +1,7 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
 client_id = "ccb95c69fbef7812f6a59699510890a1"
-name = "QuizCraft"
+name = "Product Quiz Builder"
 application_url = "https://quiz-builder.duckdns.org"
 embedded = true
 
