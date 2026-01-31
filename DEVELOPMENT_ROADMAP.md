@@ -1,4 +1,4 @@
-# AI-Powered Product Quiz Builder - Development Roadmap
+# AI-Powered QuizCraft - Development Roadmap
 
 This document outlines all TODO items and known BUGs throughout the codebase, organized by priority and file location.
 

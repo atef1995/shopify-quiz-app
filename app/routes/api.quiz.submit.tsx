@@ -12,6 +12,7 @@ import {
   createRateLimitResponse,
 } from "../lib/rate-limit.server";
 import { logger } from "../lib/logger.server";
+import { sendWebhook } from "../lib/webhooks.server";
 
 /**
  * Type definitions for quiz submission
@@ -113,7 +114,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   try {
     const body = await request.json();
-    const { quizId, email, answers } = body;
+    const { quizId, email, answers, timing } = body;
 
     // Validate required fields
     if (!quizId || !answers || !Array.isArray(answers)) {
@@ -208,8 +209,44 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           email: finalEmail,
           answers: JSON.stringify(answers),
           recommendedProducts: JSON.stringify(recommendedProducts),
+          startedAt: timing?.quizStartTime ? new Date(timing.quizStartTime) : null,
+          completionTimeSeconds: timing?.totalTimeSeconds || null,
+          advancedTracking: timing ? JSON.stringify({
+            questionTiming: timing.questionTiming || {},
+            totalTimeSeconds: timing.totalTimeSeconds,
+          }) : null,
         },
       });
+
+      // Update question-level analytics
+      if (timing?.questionTiming) {
+        for (const [questionId, timeSpent] of Object.entries(timing.questionTiming)) {
+          await tx.questionAnalytics.upsert({
+            where: { questionId },
+            update: {
+              views: { increment: 1 },
+              completions: { increment: 1 },
+              averageTime: {
+                set: await tx.questionAnalytics.findUnique({
+                  where: { questionId },
+                  select: { averageTime: true, completions: true }
+                }).then(existing => {
+                  if (!existing) return timeSpent as number;
+                  const currentAvg = existing.averageTime || 0;
+                  const newCount = existing.completions + 1;
+                  return ((currentAvg * existing.completions) + (timeSpent as number)) / newCount;
+                })
+              }
+            },
+            create: {
+              questionId,
+              views: 1,
+              completions: 1,
+              averageTime: timeSpent as number,
+            },
+          });
+        }
+      }
 
       // Update analytics atomically
       await tx.quizAnalytics.update({
@@ -229,6 +266,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       timeout: 10000, // 10 seconds (default is 5s)
     });
 
+    // Update advanced analytics after transaction
+    try {
+      await updateAdvancedAnalytics(quizId, timing);
+    } catch (error) {
+      // Advanced analytics failure is non-critical - don't fail the submission
+      console.error('Failed to update advanced analytics:', error);
+    }
+
     // Increment completion count for billing tracking AFTER transaction
     // SQLite can't handle concurrent writes, so this must be outside the transaction
     try {
@@ -236,6 +281,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     } catch {
       // Billing update failure is non-critical - don't fail the submission
     }
+
+    // Send quiz completed webhook (non-blocking)
+    sendWebhook(quiz.shop, 'quiz_completed', quizId, {
+      email: finalEmail,
+      answersCount: answers.length,
+      recommendedProductsCount: recommendedProducts.length,
+      totalTimeSeconds: timing?.totalTimeSeconds,
+      quizTitle: quiz.title,
+    });
 
     return Response.json(
       {
@@ -252,6 +306,93 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return createCorsErrorResponse(request, shopDomain, "Failed to submit quiz", 500);
   }
 };
+
+/**
+ * Update advanced analytics metrics after quiz completion
+ */
+async function updateAdvancedAnalytics(quizId: string, timing?: any) {
+  try {
+    // Get current analytics
+    const currentAnalytics = await prisma.quizAnalytics.findUnique({
+      where: { quizId },
+    });
+
+    if (!currentAnalytics) return;
+
+    // Calculate advanced metrics
+    const results = await prisma.quizResult.findMany({
+      where: { quizId },
+      select: {
+        completionTimeSeconds: true,
+        advancedTracking: true,
+        answers: true,
+      },
+      orderBy: { completedAt: 'desc' },
+      take: 1000, // Analyze last 1000 completions for performance
+    });
+
+    // Calculate average completion time
+    const completionTimes = results
+      .map(r => r.completionTimeSeconds)
+      .filter(t => t !== null) as number[];
+    const averageCompletionTime = completionTimes.length > 0
+      ? completionTimes.reduce((a, b) => a + b, 0) / completionTimes.length
+      : null;
+
+    // Calculate drop-off analysis
+    const questionIds = await prisma.question.findMany({
+      where: { quizId },
+      select: { id: true, order: true },
+      orderBy: { order: 'asc' },
+    });
+
+    const dropOffPoints: Record<string, number> = {};
+    questionIds.forEach(q => {
+      dropOffPoints[q.id] = 0;
+    });
+
+    // Count completions that stopped at each question
+    results.forEach(result => {
+      const answers = JSON.parse(result.answers);
+      if (answers.length < questionIds.length) {
+        // User didn't complete all questions
+        const lastQuestionIndex = answers.length - 1;
+        if (lastQuestionIndex >= 0 && questionIds[lastQuestionIndex]) {
+          dropOffPoints[questionIds[lastQuestionIndex].id]++;
+        }
+      }
+    });
+
+    // Calculate conversion funnel (simplified)
+    const totalViews = currentAnalytics.totalViews;
+    const totalCompletions = currentAnalytics.totalCompletions;
+    const conversionFunnel = {
+      started: totalViews,
+      completed: totalCompletions,
+      completionRate: totalViews > 0 ? (totalCompletions / totalViews) * 100 : 0,
+    };
+
+    // Update advanced metrics
+    await prisma.quizAnalytics.update({
+      where: { quizId },
+      data: {
+        advancedMetrics: JSON.stringify({
+          averageCompletionTime,
+          dropOffPoints,
+          conversionFunnel,
+          questionMetrics: {}, // Will be populated from QuestionAnalytics
+          timeBasedMetrics: {}, // TODO: Add time-based analysis
+          userSegments: {}, // TODO: Add user segmentation
+          lastUpdated: new Date().toISOString(),
+        }),
+      },
+    });
+
+  } catch (error) {
+    console.error('Error updating advanced analytics:', error);
+    // Don't throw - advanced analytics failure shouldn't break quiz submission
+  }
+}
 
 /**
  * Extract price range from option text

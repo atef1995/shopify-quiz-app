@@ -1,104 +1,43 @@
 import type {
   LoaderFunctionArgs,
   HeadersFunction,
-  ActionFunctionArgs,
 } from "react-router";
-import { useLoaderData, useNavigate, useFetcher } from "react-router";
+import { useLoaderData, useNavigate } from "react-router";
 import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import {
   getUsageStats,
   TIER_LIMITS,
 } from "../lib/billing.server";
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { useAppBridge } from "@shopify/app-bridge-react";
-import prisma from "../db.server";
-import { cancelAppSubscription } from "../lib/billing-api.server";
-import { logger } from "../lib/logger.server";
-
-/**
- * Action handler for subscription management (cancel/downgrade)
- */
-export const action = async ({ request }: ActionFunctionArgs) => {
-  const { admin, session } = await authenticate.admin(request);
-  const log = logger.child({ shop: session.shop, module: "billing" });
-
-  const formData = await request.formData();
-  const actionType = formData.get("action");
-
-  if (actionType === "cancel") {
-    try {
-      // Fetch current subscription
-      const subscription = await prisma.subscription.findUnique({
-        where: { shop: session.shop },
-      });
-
-      if (!subscription || !subscription.shopifySubscriptionId) {
-        log.warn("Cancel attempted but no active subscription found");
-        return Response.json(
-          { error: "No active subscription found" },
-          { status: 404 },
-        );
-      }
-
-      // Cancel in Shopify (with prorating)
-      await cancelAppSubscription(
-        admin,
-        subscription.shopifySubscriptionId,
-        true, // prorate refund
-      );
-
-      // Downgrade to free tier in database
-      await prisma.subscription.update({
-        where: { shop: session.shop },
-        data: {
-          tier: "free",
-          status: "cancelled",
-          shopifySubscriptionId: null,
-          updatedAt: new Date(),
-        },
-      });
-
-      log.info("Subscription cancelled successfully");
-      return Response.json({ success: true });
-    } catch (error) {
-      log.error("Failed to cancel subscription", error);
-      return Response.json(
-        {
-          error:
-            error instanceof Error
-              ? error.message
-              : "Failed to cancel subscription",
-        },
-        { status: 500 },
-      );
-    }
-  }
-
-  return Response.json({ error: "Invalid action" }, { status: 400 });
-};
+import { Redirect } from "@shopify/app-bridge/actions";
 
 /**
  * Loader to fetch billing and usage information
  */
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
 
-  const usageStats = await getUsageStats(session.shop);
+  const usageStats = await getUsageStats(session.shop, admin);
 
   // Get all tier information for comparison
-  const tiers = Object.entries(TIER_LIMITS).map(([key, value]) => ({
-    key,
-    name: value.name,
-    price: value.price,
-    limit: value.monthlyCompletions,
-    features: getTierFeatures(key as keyof typeof TIER_LIMITS),
-    isCurrent: key === usageStats.tier,
-  }));
+  const tiers = Object.entries(TIER_LIMITS).map(([key, value]) => {
+    const pricing = getTierPricing(key as keyof typeof TIER_LIMITS);
+    return {
+      key,
+      name: value.name,
+      ...pricing,
+      limit: value.monthlyCompletions,
+      features: getTierFeatures(key as keyof typeof TIER_LIMITS),
+      isCurrent: key === usageStats.tier,
+    };
+  });
 
   return {
     usage: usageStats,
     tiers,
+    shop: session.shop,
   };
 };
 
@@ -106,50 +45,92 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
  * Get feature list for each tier
  */
 function getTierFeatures(tier: keyof typeof TIER_LIMITS): string[] {
-  const baseFeatures = [
-    "Unlimited quizzes",
-    "Email capture",
-    "Basic analytics",
-    "Product recommendations",
-  ];
-
   const tierFeatures: Record<keyof typeof TIER_LIMITS, string[]> = {
-    free: [...baseFeatures, "100 completions/month"],
+    free: [
+      "3 active quizzes",
+      "Basic quiz builder",
+      "Simple analytics",
+      "100 monthly completions",
+      "Email support"
+    ],
     growth: [
-      ...baseFeatures,
-      "1,000 completions/month",
-      "AI quiz generation",
-      "Conditional logic",
+      "10 active quizzes",
+      "Advanced conditional logic",
+      "Detailed analytics & insights",
+      "1,000 monthly completions",
+      "Custom styling options",
+      "Priority email support"
     ],
     pro: [
-      ...baseFeatures,
-      "10,000 completions/month",
-      "AI quiz generation",
-      "Conditional logic",
-      "Advanced analytics",
-      "Priority support",
+      "50 active quizzes",
+      "AI-powered recommendations",
+      "Advanced analytics & reporting",
+      "10,000 monthly completions",
+      "Custom CSS & branding",
+      "Webhook integrations",
+      "Priority support + live chat"
     ],
     enterprise: [
-      ...baseFeatures,
-      "Unlimited completions",
-      "AI quiz generation",
-      "Conditional logic",
-      "Advanced analytics",
-      "Priority support",
+      "Unlimited quizzes & completions",
+      "White-label options",
       "Custom integrations",
       "Dedicated account manager",
+      "SLA guarantee",
+      "Advanced API access",
+      "Phone support"
     ],
   };
 
   return tierFeatures[tier];
 }
 
+/**
+ * Get pricing information for each tier
+ */
+function getTierPricing(tier: keyof typeof TIER_LIMITS) {
+  const pricing: Record<keyof typeof TIER_LIMITS, {
+    monthlyPrice: number;
+    yearlyPrice: number;
+    yearlySavings: number;
+    trialDays: number;
+  }> = {
+    free: {
+      monthlyPrice: 0,
+      yearlyPrice: 0,
+      yearlySavings: 0,
+      trialDays: 0,
+    },
+    growth: {
+      monthlyPrice: 29.99,
+      yearlyPrice: 309.99,
+      yearlySavings: 49,
+      trialDays: 7,
+    },
+    pro: {
+      monthlyPrice: 99,
+      yearlyPrice: 999,
+      yearlySavings: 189,
+      trialDays: 14,
+    },
+    enterprise: {
+      monthlyPrice: 299,
+      yearlyPrice: 2600,
+      yearlySavings: 988,
+      trialDays: 14,
+    },
+  };
+
+  return pricing[tier];
+}
+
 export default function Billing() {
-  const { usage, tiers } = useLoaderData<typeof loader>();
-  const fetcher = useFetcher();
+  const { usage, tiers, shop } = useLoaderData<typeof loader>();
   const navigate = useNavigate();
   const shopify = useAppBridge();
-  const [showCancelModal, setShowCancelModal] = useState(false);
+
+  // Determine current tier price for UI conditional logic
+  const currentTier = tiers.find((t) => t.isCurrent);
+  const currentPrice = currentTier?.monthlyPrice ?? 0;
 
   const isNearLimit = usage.percentUsed >= 80;
   const isOverLimit = usage.percentUsed >= 100;
@@ -171,25 +152,29 @@ export default function Billing() {
     }
   }, [shopify, navigate]);
 
-  const handleUpgrade = (tier: string) => {
-    // Use fetcher to submit to billing upgrade route
-    fetcher.submit(
-      { tier },
-      { method: "post", action: "/app/billing/upgrade" },
-    );
-  };
+  const handleManageBilling = () => {
+    // Use App Bridge Redirect action to navigate to the shop admin app settings (better UX)
+    const clientId = "ccb95c69fbef7812f6a59699510890a1"; // From shopify.app.toml
+    try {
+      const redirect = Redirect.create(shopify as any);
+      redirect.dispatch(Redirect.Action.ADMIN_PATH, `/apps/${clientId}/settings`);
+    } catch (err) {
+      // Fallback: open app settings in new tab if App Bridge redirect fails
+      const url = `https://${shop}/admin/apps/${clientId}/settings`;
+      const opened = window.open(url, '_blank', 'noopener');
 
-  const handleCancel = () => {
-    setShowCancelModal(true);
-  };
-
-  const confirmCancel = () => {
-    fetcher.submit({ action: "cancel" }, { method: "post" });
-    setShowCancelModal(false);
+      if (!opened) {
+        shopify.toast.show("Unable to open App settings. Please ensure popups are allowed and that you're logged into the Shopify admin.", { isError: true });
+      }
+    }
   };
 
   return (
     <s-page heading="Billing & Usage" max-width="full">
+      <s-text slot="primary-action" variant="body-sm" color="subdued">
+        In your Shopify admin, click the ••• menu (top-right) → &quot;Manage app&quot; → &quot;Manage billing and usage&quot; to upgrade your plan.
+      </s-text>
+
       {/* Current Usage */}
       <s-section heading="Current Usage">
         <s-stack direction="block" gap="base">
@@ -265,8 +250,8 @@ export default function Billing() {
       <s-section heading="Pricing Plans">
         <s-stack direction="block" gap="base">
           <s-paragraph>
-            Choose the plan that fits your business needs. Upgrade or downgrade
-            anytime.
+            Choose the plan that fits your business needs. Manage your billing
+            directly through Shopify.
           </s-paragraph>
 
           <s-grid columns={tiers.length === 4 ? 4 : 3}>
@@ -281,17 +266,29 @@ export default function Billing() {
               >
                 <s-stack direction="block" gap="base">
                   {tier.isCurrent && (
-                    <s-badge variant="info">Current Plan</s-badge>
+                    <s-badge variant="info">Current</s-badge>
                   )}
 
                   <s-stack direction="block" gap="tight">
                     <s-text variant="heading-md">{tier.name}</s-text>
-                    <s-text variant="heading-xl">
-                      ${tier.price}
-                      <s-text variant="body-sm" color="subdued">
-                        /month
+                    {tier.key !== 'free' && (
+                      <>
+                        <s-text variant="heading-xl">
+                          ${tier.monthlyPrice} / 30 days
+                        </s-text>
+                        <s-text variant="body-sm" color="subdued">
+                          ${tier.yearlyPrice} $/year ({tier.yearlySavings} $ off)
+                        </s-text>
+                        <s-text variant="body-sm" color="success">
+                          {tier.trialDays} trial days remaining
+                        </s-text>
+                      </>
+                    )}
+                    {tier.key === 'free' && (
+                      <s-text variant="heading-xl">
+                        $0 /month
                       </s-text>
-                    </s-text>
+                    )}
                   </s-stack>
 
                   <s-stack direction="block" gap="tight">
@@ -309,14 +306,13 @@ export default function Billing() {
                   </s-stack>
 
                   {!tier.isCurrent && tier.key !== "free" && (
-                    <s-button
-                      variant="primary"
-                      fullWidth
-                      onClick={() => handleUpgrade(tier.key)}
-                      loading={fetcher.state === "submitting"}
-                    >
-                      Upgrade to {tier.name}
-                    </s-button>
+                    <s-text variant="body-sm" color="subdued">
+                      {tier.monthlyPrice > currentPrice ? (
+                        <>To upgrade to this plan, open the ••• menu (top-right) → &quot;Manage app&quot; → &quot;Manage billing and usage&quot;.</>
+                      ) : (
+                        <>To downgrade to this plan, please open the ••• menu (top-right) → &quot;Manage app&quot; → &quot;Manage billing and usage&quot;.</>
+                      )}
+                    </s-text>
                   )}
 
                   {tier.isCurrent && (
@@ -324,15 +320,9 @@ export default function Billing() {
                       <s-button variant="primary" fullWidth disabled>
                         Current Plan
                       </s-button>
-                      {tier.key !== "free" && (
-                        <s-button
-                          variant="plain"
-                          fullWidth
-                          onClick={handleCancel}
-                        >
-                          Cancel Subscription
-                        </s-button>
-                      )}
+                      <s-text variant="body-sm" color="subdued">
+                        To change plans, open the ••• menu (top-right) → &quot;Manage app&quot; → &quot;Manage billing and usage&quot; in your Shopify admin.
+                      </s-text>
                     </s-stack>
                   )}
                 </s-stack>
@@ -341,40 +331,6 @@ export default function Billing() {
           </s-grid>
         </s-stack>
       </s-section>
-
-      {/* Cancel Confirmation Modal */}
-      {showCancelModal && (
-        <s-modal
-          open
-          onClose={() => setShowCancelModal(false)}
-          primaryAction={{
-            content: "Cancel Subscription",
-            onAction: confirmCancel,
-            destructive: true,
-          }}
-          secondaryActions={[
-            {
-              content: "Keep Subscription",
-              onAction: () => setShowCancelModal(false),
-            },
-          ]}
-        >
-          <s-box padding="base" className="card-white-bg">
-            <s-stack direction="block" gap="base">
-              <s-text variant="heading-md">Cancel Subscription?</s-text>
-              <s-text variant="body-md">
-                Are you sure you want to cancel your subscription? You&apos;ll be
-                downgraded to the Free plan and will only be able to process 100
-                quiz completions per month.
-              </s-text>
-              <s-text variant="body-sm" color="subdued">
-                You&apos;ll receive a prorated refund for the remaining time in your
-                billing period.
-              </s-text>
-            </s-stack>
-          </s-box>
-        </s-modal>
-      )}
 
       {/* FAQ */}
       <s-section slot="aside" heading="Billing FAQ">

@@ -1,7 +1,7 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
 client_id = "ccb95c69fbef7812f6a59699510890a1"
-name = "Product Quiz Builder"
+name = "QuizCraft"
 application_url = "https://quiz-builder.duckdns.org"
 embedded = true
 
@@ -12,43 +12,41 @@ automatically_update_urls_on_dev = true
 api_version = "2025-10"
 
   [[webhooks.subscriptions]]
-  topics = [ "app/uninstalled" ]
-  uri = "/webhooks/app/uninstalled"
-
-  [[webhooks.subscriptions]]
   topics = [ "app/scopes_update" ]
   uri = "/webhooks/app/scopes_update"
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/customers/data_request"
+  compliance_topics = [ "customers/data_request" ]
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/customers/redact"
+  compliance_topics = [ "customers/redact" ]
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/shop/redact"
+  compliance_topics = [ "shop/redact" ]
 
   [[webhooks.subscriptions]]
   topics = [ "app_subscriptions/update" ]
   uri = "/webhooks/app/subscriptions_update"
 
   [[webhooks.subscriptions]]
-  compliance_topics = ["customers/data_request"]
-  uri = "/webhooks/customers/data_request"
-
-  [[webhooks.subscriptions]]
-  compliance_topics = ["customers/redact"]
-  uri = "/webhooks/customers/redact"
-
-  [[webhooks.subscriptions]]
-  compliance_topics = ["shop/redact"]
-  uri = "/webhooks/shop/redact"
+  topics = [ "app/uninstalled" ]
+  uri = "/webhooks/app/uninstalled"
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = "write_products,read_products,read_customers,write_customers"
+scopes = "read_customers,read_products,write_customers,write_products"
 
 [auth]
-redirect_urls = [ 
+redirect_urls = [
   "https://quiz-builder.duckdns.org/auth/login",
   "https://quiz-builder.duckdns.org/auth/callback",
   "https://quiz-builder.duckdns.org/api/auth"
 ]
 
 [app_proxy]
-# App proxy routes storefront requests to app
-# Storefront: /apps/quiz-app/* → App: https://your-app.com/*
 url = "https://quiz-builder.duckdns.org"
 subpath = "quiz-app"
 prefix = "apps"

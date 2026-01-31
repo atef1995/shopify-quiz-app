@@ -22,6 +22,11 @@
   let answers = [];
   let customerEmail = null;
 
+  // Timing analytics
+  let quizStartTime = null;
+  let questionStartTime = null;
+  let questionTiming = {}; // { questionId: timeSpentInSeconds }
+
   // localStorage key prefix for this quiz session
   let storageKey = null;
 
@@ -45,6 +50,118 @@
   const emailCaptureEl = document.getElementById('quiz-email-capture');
   const resultsEl = document.getElementById('quiz-results');
   const errorEl = document.getElementById('quiz-error');
+
+  /**
+   * Send webhook event (non-blocking)
+   */
+  function sendWebhook(event, data = {}) {
+    fetch(`${API_BASE_URL}/api/webhooks/${event}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        quizId: quizId,
+        ...data,
+      }),
+    }).catch(error => {
+      console.warn(`Webhook delivery failed for ${event}:`, error);
+    });
+  }
+
+  /**
+   * Apply custom styling from Shopify block settings
+   */
+  function applyCustomStyling() {
+    const primaryColor = container.dataset.primaryColor || '#667eea';
+    const secondaryColor = container.dataset.secondaryColor || '#f8f9fa';
+    const textColor = container.dataset.textColor || '#333333';
+    const backgroundColor = container.dataset.backgroundColor || '#ffffff';
+    const borderRadius = container.dataset.borderRadius || '8px';
+    const fontFamily = container.dataset.fontFamily || 'inherit';
+
+    // Create custom CSS
+    const customCSS = `
+      <style id="quiz-custom-styles">
+        .quiz-container {
+          --quiz-primary-color: ${primaryColor};
+          --quiz-secondary-color: ${secondaryColor};
+          --quiz-text-color: ${textColor};
+          --quiz-background-color: ${backgroundColor};
+          --quiz-border-radius: ${borderRadius};
+          --quiz-font-family: ${fontFamily};
+        }
+
+        .quiz-wrapper {
+          font-family: var(--quiz-font-family, inherit) !important;
+          background-color: var(--quiz-background-color, #ffffff) !important;
+          color: var(--quiz-text-color, #333333) !important;
+          border-radius: var(--quiz-border-radius, 8px) !important;
+        }
+
+        .quiz-btn-primary {
+          background-color: var(--quiz-primary-color, #667eea) !important;
+          border-color: var(--quiz-primary-color, #667eea) !important;
+        }
+
+        .quiz-btn-primary:hover {
+          background-color: ${adjustColor(primaryColor, -20)} !important;
+          border-color: ${adjustColor(primaryColor, -20)} !important;
+        }
+
+        .quiz-btn-secondary {
+          background-color: var(--quiz-secondary-color, #f8f9fa) !important;
+          border-color: var(--quiz-secondary-color, #f8f9fa) !important;
+          color: var(--quiz-text-color, #333333) !important;
+        }
+
+        .quiz-btn-secondary:hover {
+          background-color: ${adjustColor(secondaryColor, -10)} !important;
+        }
+
+        .quiz-progress-bar {
+          background-color: var(--quiz-secondary-color, #f8f9fa) !important;
+        }
+
+        .quiz-progress-fill {
+          background-color: var(--quiz-primary-color, #667eea) !important;
+        }
+
+        .email-input {
+          border-radius: var(--quiz-border-radius, 8px) !important;
+          border-color: var(--quiz-secondary-color, #f8f9fa) !important;
+        }
+
+        .email-input:focus {
+          border-color: var(--quiz-primary-color, #667eea) !important;
+          box-shadow: 0 0 0 2px ${primaryColor}33 !important;
+        }
+      </style>
+    `;
+
+    // Insert custom CSS into head
+    document.head.insertAdjacentHTML('beforeend', customCSS);
+  }
+
+  /**
+   * Helper function to adjust color brightness
+   */
+  function adjustColor(color, amount) {
+    // Simple color adjustment - darken by reducing RGB values
+    const usePound = color[0] === '#';
+    const col = usePound ? color.slice(1) : color;
+
+    const num = parseInt(col, 16);
+    let r = (num >> 16) + amount;
+    let g = (num >> 8 & 0x00FF) + amount;
+    let b = (num & 0x0000FF) + amount;
+
+    r = r > 255 ? 255 : r < 0 ? 0 : r;
+    g = g > 255 ? 255 : g < 0 ? 0 : g;
+    b = b > 255 ? 255 : b < 0 ? 0 : b;
+
+    return (usePound ? '#' : '') + (r << 16 | g << 8 | b).toString(16);
+  }
 
   /**
    * LocalStorage helper functions for quiz progress persistence
@@ -192,6 +309,9 @@
 
       console.log(`Quiz loaded successfully with ${quizData.questions.length} questions`);
 
+      // Apply custom styling from block settings
+      applyCustomStyling();
+
       // Try to restore previous progress
       const savedProgress = loadProgress();
       if (savedProgress && savedProgress.answers && savedProgress.answers.length > 0) {
@@ -219,6 +339,16 @@
       loadingEl.style.display = 'none';
       contentEl.style.display = 'block';
 
+      // Initialize timing analytics
+      quizStartTime = Date.now();
+      questionTiming = {};
+
+      // Send quiz started webhook
+      sendWebhook('quiz_started', {
+        quizTitle: quizData.title,
+        totalQuestions: quizData.questions.length,
+      });
+
       renderQuestion();
       updateProgress();
       setupEventListeners();
@@ -242,6 +372,9 @@
    */
   function renderQuestion() {
     const question = quizData.questions[currentQuestionIndex];
+
+    // Track question start time for analytics
+    questionStartTime = Date.now();
 
     // Update header
     document.querySelector('.quiz-title').textContent = quizData.title;
@@ -368,6 +501,15 @@
     // Save progress to localStorage immediately
     saveProgress();
 
+    // Send question answered webhook
+    sendWebhook('question_answered', {
+      questionId: quizData.questions[currentQuestionIndex].id,
+      questionText: quizData.questions[currentQuestionIndex].text,
+      answer: option.text,
+      questionNumber: currentQuestionIndex + 1,
+      totalQuestions: quizData.questions.length,
+    });
+
     // Enable next button
     document.querySelector('.quiz-btn-next').disabled = false;
 
@@ -378,6 +520,13 @@
    * Navigate to next question
    */
   function nextQuestion() {
+    // Track time spent on current question
+    if (questionStartTime) {
+      const timeSpent = (Date.now() - questionStartTime) / 1000; // Convert to seconds
+      const questionId = quizData.questions[currentQuestionIndex].id;
+      questionTiming[questionId] = timeSpent;
+    }
+
     if (currentQuestionIndex < quizData.questions.length - 1) {
       currentQuestionIndex++;
       saveProgress(); // Save progress when navigating
@@ -397,6 +546,13 @@
    * Navigate to previous question
    */
   function previousQuestion() {
+    // Track time spent on current question before going back
+    if (questionStartTime) {
+      const timeSpent = (Date.now() - questionStartTime) / 1000; // Convert to seconds
+      const questionId = quizData.questions[currentQuestionIndex].id;
+      questionTiming[questionId] = timeSpent;
+    }
+
     if (currentQuestionIndex > 0) {
       currentQuestionIndex--;
       saveProgress(); // Save progress when navigating back
@@ -426,6 +582,15 @@
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       customerEmail = form.querySelector('input[name="email"]').value;
+
+      // Send email captured webhook
+      sendWebhook('email_captured', {
+        email: customerEmail,
+        quizTitle: quizData.title,
+        totalQuestions: quizData.questions.length,
+        answersCount: answers.length,
+      });
+
       await submitQuizResults();
     });
   }
@@ -450,6 +615,11 @@
           quizId: quizData.id,
           email: customerEmail,
           answers: answers,
+          timing: {
+            quizStartTime: quizStartTime,
+            questionTiming: questionTiming,
+            totalTimeSeconds: quizStartTime ? (Date.now() - quizStartTime) / 1000 : null,
+          },
         }),
       });
 

@@ -23,7 +23,15 @@
   </div>
 {% endif %}
 
-<div class="quiz-container" id="quiz-{{ block.id }}" data-quiz-id="{{ block.settings.quiz_id }}" {% if block.settings.quiz_id == blank %}style="display: none;"{% endif %}>
+<div class="quiz-container" id="quiz-{{ block.id }}" 
+     data-quiz-id="{{ block.settings.quiz_id }}" 
+     data-primary-color="{{ block.settings.primary_color }}"
+     data-secondary-color="{{ block.settings.secondary_color }}"
+     data-text-color="{{ block.settings.text_color }}"
+     data-background-color="{{ block.settings.background_color }}"
+     data-border-radius="{{ block.settings.border_radius }}"
+     data-font-family="{{ block.settings.font_family }}"
+     {% if block.settings.quiz_id == blank %}style="display: none;"{% endif %}>
   <div class="quiz-wrapper">
     <!-- Loading State -->
     <div class="quiz-loading" id="quiz-loading">
@@ -127,8 +135,66 @@
       "info": "Copy the Quiz ID from your app admin panel. Go to the app → Quizzes → Click on a quiz → Copy the ID from the URL (the part after /quizzes/)"
     },
     {
+      "type": "header",
+      "content": "🎨 Custom Styling (Growth Plan & Above)"
+    },
+    {
+      "type": "color",
+      "id": "primary_color",
+      "label": "Primary Color",
+      "default": "#667eea",
+      "info": "Main brand color for buttons and highlights"
+    },
+    {
+      "type": "color",
+      "id": "secondary_color",
+      "label": "Secondary Color",
+      "default": "#f8f9fa",
+      "info": "Background color for secondary elements"
+    },
+    {
+      "type": "color",
+      "id": "text_color",
+      "label": "Text Color",
+      "default": "#333333",
+      "info": "Primary text color"
+    },
+    {
+      "type": "color",
+      "id": "background_color",
+      "label": "Background Color",
+      "default": "#ffffff",
+      "info": "Quiz container background color"
+    },
+    {
+      "type": "select",
+      "id": "border_radius",
+      "label": "Border Radius",
+      "options": [
+        { "value": "0px", "label": "Sharp" },
+        { "value": "4px", "label": "Small" },
+        { "value": "8px", "label": "Medium" },
+        { "value": "12px", "label": "Large" },
+        { "value": "16px", "label": "Extra Large" }
+      ],
+      "default": "8px"
+    },
+    {
+      "type": "select",
+      "id": "font_family",
+      "label": "Font Family",
+      "options": [
+        { "value": "inherit", "label": "Inherit from theme" },
+        { "value": "'Helvetica Neue', Helvetica, Arial, sans-serif", "label": "Helvetica" },
+        { "value": "'Georgia', serif", "label": "Georgia" },
+        { "value": "'Times New Roman', Times, serif", "label": "Times New Roman" },
+        { "value": "'Courier New', monospace", "label": "Courier New" }
+      ],
+      "default": "inherit"
+    },
+    {
       "type": "paragraph",
-      "content": "💡 Tip: To find your Quiz ID, go to your Shopify app admin, click on a quiz to edit it, and copy the ID from the browser URL."
+      "content": "💡 Custom styling is available on Growth plan and above. Free plan users see default styling only."
     }
   ]
 }

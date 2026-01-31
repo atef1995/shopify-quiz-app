@@ -30,7 +30,7 @@ model Session {
   emailVerified Boolean?  @default(false)
 }
 
-// Quiz models for the Product Quiz Builder app
+// Quiz models for the QuizCraft app
 model Quiz {
   id          String  @id @default(cuid())
   shop        String
@@ -51,6 +51,24 @@ model Quiz {
   @@index([shop])
 }
 
+model QuestionAnalytics {
+  id         String   @id @default(cuid())
+  questionId String   @unique
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  // Question-level metrics
+  views         Int     @default(0) // How many times this question was shown
+  completions   Int     @default(0) // How many times this question was answered
+  dropOffs      Int     @default(0) // How many times users dropped off at this question
+  averageTime   Float?  // Average time spent on this question (seconds)
+
+  // Answer distribution stored as JSON
+  // Example: { "optionId1": count, "optionId2": count, "customAnswer": count }
+  answerDistribution String?
+
+  updatedAt DateTime @updatedAt
+}
+
 model Question {
   id     String @id @default(cuid())
   quizId String
@@ -68,6 +86,7 @@ model Question {
   updatedAt DateTime @updatedAt
 
   options QuestionOption[]
+  analytics QuestionAnalytics?
 
   @@index([quizId])
 }
@@ -108,9 +127,15 @@ model QuizResult {
   recommendedProducts String
 
   // Tracking
-  completedAt DateTime  @default(now())
-  convertedAt DateTime? // When customer made a purchase
-  revenue     Float?    @default(0.0)
+  startedAt           DateTime? // When user started the quiz
+  completedAt         DateTime  @default(now())
+  completionTimeSeconds Float?  // Total time spent on quiz in seconds
+  convertedAt         DateTime? // When customer made a purchase
+  revenue             Float?    @default(0.0)
+
+  // Advanced tracking stored as JSON
+  // Example: { questionTiming: { q1: 15.2, q2: 8.7 }, dropOffQuestion: "q3" }
+  advancedTracking String?
 
   @@index([quizId])
   @@index([email])
@@ -122,18 +147,22 @@ model QuizAnalytics {
   quizId String @unique
   quiz   Quiz   @relation(fields: [quizId], references: [id], onDelete: Cascade)
 
-  // Metrics
+  // Basic Metrics
   totalViews        Int   @default(0)
   totalCompletions  Int   @default(0)
   emailCaptureCount Int   @default(0)
   totalRevenue      Float @default(0.0)
 
-  // Calculated metrics (completion rate, avg time, etc.) stored as JSON
-  metrics String?
-
-  // Popular paths/answers stored as JSON
-  // Example: { mostCommonPath: [...], popularAnswers: {...} }
-  insights String?
+  // Advanced Analytics - stored as JSON
+  // {
+  //   averageCompletionTime: number,
+  //   dropOffPoints: { questionId: dropOffCount },
+  //   conversionFunnel: { step: conversionRate },
+  //   questionMetrics: { questionId: { views, completions, avgTime } },
+  //   timeBasedMetrics: { hourly: [...], daily: [...] },
+  //   userSegments: { segment: metrics }
+  // }
+  advancedMetrics String?
 
   updatedAt DateTime @updatedAt
 }
@@ -163,4 +192,26 @@ model Subscription {
 
   @@index([shop])
   @@index([shopifySubscriptionId])
+}
+
+model WebhookSettings {
+  id     String @id @default(cuid())
+  shop   String @unique
+
+  // Webhook URLs for different events
+  quizStartedUrl     String? // Called when a user starts a quiz
+  questionAnsweredUrl String? // Called when a user answers a question
+  quizCompletedUrl   String? // Called when a user completes a quiz
+  emailCapturedUrl   String? // Called when an email is captured
+
+  // Security settings
+  webhookSecret String? // Secret for webhook signature verification
+
+  // Status
+  enabled Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([shop])
 }

@@ -1,25 +1,23 @@
 /**
  * Billing Upgrade Route
  *
- * Handles subscription upgrades by creating Shopify recurring application charges.
- * Merchant is redirected to Shopify's confirmation URL to approve the charge.
+ * Handles subscription upgrades by redirecting to Shopify's managed billing page.
+ * For managed pricing, Shopify handles all subscription creation and billing.
  */
 
 import type { ActionFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
-import prisma from "../db.server";
-import { createAppSubscription } from "../lib/billing-api.server";
 import { TIER_LIMITS, type SubscriptionTier } from "../lib/billing.server";
 import { logger } from "../lib/logger.server";
 
 /**
  * Action handler for subscription upgrade
  *
- * Creates a Shopify recurring application charge and saves pending subscription
- * to database. Redirects merchant to Shopify confirmation page.
+ * Redirects merchant to Shopify's billing management page where they can select a plan.
+ * Managed pricing apps cannot create subscriptions programmatically.
  */
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { admin, session, redirect } = await authenticate.admin(request);
+  const { session, redirect } = await authenticate.admin(request);
   const log = logger.child({ shop: session.shop, module: "billing-upgrade" });
 
   const formData = await request.formData();
@@ -35,58 +33,24 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   try {
-    // Build return URL for after merchant approves charge
-    // NOTE: Must use absolute URL, Shopify redirects merchant to this after approval
-    const appUrl = process.env.SHOPIFY_APP_URL || "";
-    const returnUrl = `${appUrl}/app/billing/callback?tier=${tier}`;
+    log.info("Redirecting to Shopify billing page", { tier });
 
-    log.info("Creating subscription", { tier });
+    // For managed pricing, redirect to the app settings page using the shop admin domain
+    // Merchant will select plan and Shopify will handle subscription creation
+    const clientId = "ccb95c69fbef7812f6a59699510890a1"; // From shopify.app.toml
+    const billingUrl = `https://${session.shop}/admin/apps/${clientId}/settings`;
 
-    // Create subscription charge in Shopify
-    // NOTE: Using isTest=true for development, should be false in production
-    const { subscription, confirmationUrl } = await createAppSubscription(
-      admin,
-      tier,
-      returnUrl,
-      true, // isTest - set to false in production
-    );
-
-    // Save pending subscription to database
-    // Status is "pending" until merchant approves charge
-    await prisma.subscription.upsert({
-      where: { shop: session.shop },
-      update: {
-        tier,
-        shopifySubscriptionId: subscription.id,
-        returnUrl,
-        status: "pending",
-        updatedAt: new Date(),
-      },
-      create: {
-        shop: session.shop,
-        tier,
-        shopifySubscriptionId: subscription.id,
-        returnUrl,
-        status: "pending",
-        currentPeriodStart: new Date(),
-        currentPeriodEnd: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days
-      },
-    });
-
-    log.info("Subscription created, redirecting to confirmation", { subscriptionId: subscription.id });
-
-    // Redirect merchant to Shopify confirmation page
     // IMPORTANT: Use redirect from authenticate.admin to maintain session
-    return redirect(confirmationUrl);
+    return redirect(billingUrl);
   } catch (error) {
-    log.error("Failed to create subscription", error);
+    log.error("Failed to redirect to billing page", error);
 
     return Response.json(
       {
         error:
           error instanceof Error
             ? error.message
-            : "Failed to create subscription",
+            : "Failed to redirect to billing page",
       },
       { status: 500 },
     );

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-AI-Powered Product Quiz Builder for Shopify - an embedded app that helps merchants create interactive product recommendation quizzes with AI-powered question generation. Built with React Router v7, Prisma ORM, Polaris web components, and theme app extensions.
+AI-Powered QuizCraft for Shopify - an embedded app that helps merchants create interactive product recommendation quizzes with AI-powered question generation. Built with React Router v7, Prisma ORM, Polaris web components, and theme app extensions.
 
 ## Key Commands
 

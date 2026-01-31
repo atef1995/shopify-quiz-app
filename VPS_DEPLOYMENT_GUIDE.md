@@ -1,5 +1,5 @@
 # VPS Deployment Guide
-**Product Quiz Builder - Self-Hosted on Your VPS**
+**QuizCraft - Self-Hosted on Your VPS**
 
 Last Updated: October 25, 2025
 
@@ -333,7 +333,7 @@ pm2 stop shopify-quiz-app
 ### 7.1 Update App URLs
 
 1. Go to: https://partners.shopify.com
-2. Navigate to: Apps → Product Quiz Builder → Configuration
+2. Navigate to: Apps → QuizCraft → Configuration
 3. Update **App URL:** `https://quiz.yourdomain.com`
 4. Update **Allowed redirection URL(s):**
    - `https://quiz.yourdomain.com/auth/login`
@@ -362,7 +362,7 @@ Should return `200 OK` with HTTPS.
 
 ### 8.2 Install on Development Store
 
-1. Partner Dashboard → Apps → Product Quiz Builder → Test your app
+1. Partner Dashboard → Apps → QuizCraft → Test your app
 2. Select development store
 3. Click "Install app"
 4. Should redirect to quiz dashboard

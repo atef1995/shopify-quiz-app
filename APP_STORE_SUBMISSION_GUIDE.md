@@ -1,5 +1,5 @@
 # Shopify App Store Submission Guide
-**Product Quiz Builder - Complete Checklist**
+**QuizCraft - Complete Checklist**
 
 Last Updated: October 25, 2025
 
@@ -26,7 +26,7 @@ npm run deploy
 If `npm run deploy` doesn't update the URLs:
 
 1. Go to: https://partners.shopify.com
-2. Navigate to: Apps → Product Quiz Builder → Configuration
+2. Navigate to: Apps → QuizCraft → Configuration
 3. Find "App URL" field
 4. Change from: `https://shopify-quiz-app.fly.dev`
 5. Change to: `https://product-quiz-builder.fly.dev`
@@ -57,14 +57,14 @@ flyctl apps resume shopify-quiz-db
 
 | Requirement | Status | Notes |
 |------------|--------|-------|
-| URLs (no "shopify"/"example") | ✅ DONE | Using product-quiz-builder.fly.dev |
+| URLs (no "shopify"/"example") | ✅ DONE | Using quiz-builder.duckdns.org |
 | App Icon | ❌ TODO | Need 512x512px PNG |
 | API Contact Email | ✅ DONE | atefm6@gmail.com |
-| Emergency Contact | ✅ DONE | atefm6@gmail.com + phone needed |
+| Emergency Contact | ⚠️ PARTIAL | Email done, phone needed |
 | Primary Listing Language | ❌ TODO | Must select in Partner Dashboard |
 | GDPR Webhooks | ✅ DONE | All 3 implemented |
-| App Deployment | ❌ TODO | Need to deploy to Fly.io |
-| Shopify Deployment | ❌ TODO | Need to run `npm run deploy` |
+| App Deployment | ✅ DONE | Deployed to duckdns.org |
+| Shopify Deployment | ✅ DONE | Version released successfully |
 
 ---
 
@@ -90,7 +90,7 @@ flyctl apps resume shopify-quiz-db
 - App Proxy: `https://product-quiz-builder.fly.dev`
 
 **How to Verify:**
-1. Go to Partner Dashboard → Apps → Product Quiz Builder → Configuration
+1. Go to Partner Dashboard → Apps → QuizCraft → Configuration
 2. Check "App URL" field - should show product-quiz-builder.fly.dev
 3. Check "Allowed redirection URL(s)" - should show product-quiz-builder.fly.dev
 
@@ -119,7 +119,7 @@ flyctl apps resume shopify-quiz-db
 4. Save as `app-icon.png`
 
 **How to Upload:**
-1. Go to Partner Dashboard → Apps → Product Quiz Builder → Distribution
+1. Go to Partner Dashboard → Apps → QuizCraft → Distribution
 2. Scroll to "App listing" section
 3. Click "Manage" under "App icon"
 4. Upload the 512x512px PNG file
@@ -182,7 +182,7 @@ Save icon to: `public/app-icon.png` (for documentation)
 - English (most common for Shopify apps)
 
 **How to Select:**
-1. Partner Dashboard → Apps → Product Quiz Builder → Distribution
+1. Partner Dashboard → Apps → QuizCraft → Distribution
 2. Scroll to "App listing" section
 3. Click "Manage" under "Listing languages"
 4. Select "English" as primary language
@@ -209,7 +209,7 @@ Save icon to: `public/app-icon.png` (for documentation)
 - Choose: **"My app won't use customer data"**
 
 **How to Declare:**
-1. Partner Dashboard → Apps → Product Quiz Builder → Distribution
+1. Partner Dashboard → Apps → QuizCraft → Distribution
 2. Find "Request access to protected customer data" section
 3. Select "My app won't use customer data"
 4. Save
@@ -382,7 +382,7 @@ flyctl certs check product-quiz-builder.fly.dev
 **Required Fields:**
 
 **App Name:**
-- Current: "Product Quiz Builder"
+- Current: "QuizCraft"
 - ✅ Already set in `shopify.app.toml`
 
 **Tagline (60 chars max):**
@@ -393,7 +393,7 @@ flyctl certs check product-quiz-builder.fly.dev
 ```
 Help customers find their perfect products with interactive quizzes.
 
-Product Quiz Builder lets you create personalized product recommendation quizzes that guide shoppers to the items they'll love. Increase engagement, reduce decision fatigue, and boost conversions with smart product matching.
+QuizCraft lets you create personalized product recommendation quizzes that guide shoppers to the items they'll love. Increase engagement, reduce decision fatigue, and boost conversions with smart product matching.
 
 KEY FEATURES:
 • Build custom quizzes with unlimited questions and options
@@ -470,7 +470,7 @@ Free plan includes 100 quiz completions per month. Upgrade for unlimited respons
 - Support Email: atefm6@gmail.com
 
 **How to Add:**
-1. Partner Dashboard → Apps → Product Quiz Builder → Distribution
+1. Partner Dashboard → Apps → QuizCraft → Distribution
 2. Click "Manage" under "App listing"
 3. Fill in all required fields
 4. Upload screenshots
@@ -494,7 +494,7 @@ Free plan includes 100 quiz completions per month. Upgrade for unlimited respons
 - ❌ Inventory management (not applicable)
 
 **How to Select:**
-1. Partner Dashboard → Apps → Product Quiz Builder → Distribution
+1. Partner Dashboard → Apps → QuizCraft → Distribution
 2. Find "App capabilities" section (only visible after language selection)
 3. Check applicable boxes:
    - ✅ Storefront integration

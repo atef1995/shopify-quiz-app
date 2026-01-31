@@ -1,13 +1,13 @@
 import type { LoaderFunctionArgs } from "react-router";
 
-export const loader = async ({ request }: LoaderFunctionArgs) => {
+export const loader = async () => {
   const html = `
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Pricing - Product Quiz Builder</title>
+  <title>Pricing - QuizCraft</title>
   <style>
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
@@ -190,61 +190,59 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         </div>
         <div class="plan-description">Perfect for getting started with product quizzes</div>
         <ul class="features">
-          <li>1 active quiz</li>
+          <li>3 active quizzes</li>
           <li>Basic quiz builder</li>
           <li>Simple analytics</li>
           <li>100 monthly completions</li>
           <li>Email support</li>
         </ul>
-        <a href="https://apps.shopify.com/product-quiz-builder" class="cta-button">Get Started Free</a>
+        <a href="https://quiz-builder.duckdns.org" class="cta-button">Get Started Free</a>
       </div>
 
       <!-- Growth Plan -->
       <div class="plan popular">
         <div class="plan-name">Growth</div>
         <div class="plan-price">
-          <span class="currency">$</span>9.99
+          <span class="currency">$</span>29
           <span class="period">/month</span>
         </div>
         <div class="plan-description">Scale your quiz strategy with advanced features</div>
         <ul class="features">
-          <li>5 active quizzes</li>
+          <li>10 active quizzes</li>
           <li>Advanced conditional logic</li>
           <li>Detailed analytics & insights</li>
           <li>1,000 monthly completions</li>
           <li>Custom styling options</li>
           <li>Priority email support</li>
-          <li>14-day free trial</li>
         </ul>
-        <a href="https://apps.shopify.com/product-quiz-builder" class="cta-button">Start Free Trial</a>
+        <a href="https://quiz-builder.duckdns.org" class="cta-button">Upgrade Now</a>
       </div>
 
       <!-- Professional Plan -->
       <div class="plan">
         <div class="plan-name">Professional</div>
         <div class="plan-price">
-          <span class="currency">$</span>29.99
+          <span class="currency">$</span>99
           <span class="period">/month</span>
         </div>
         <div class="plan-description">Complete quiz solution for established stores</div>
         <ul class="features">
-          <li>Unlimited active quizzes</li>
+          <li>50 active quizzes</li>
           <li>AI-powered recommendations</li>
           <li>Advanced analytics & reporting</li>
           <li>10,000 monthly completions</li>
           <li>Custom CSS & branding</li>
           <li>Webhook integrations</li>
           <li>Priority support + live chat</li>
-          <li>14-day free trial</li>
         </ul>
-        <a href="https://apps.shopify.com/product-quiz-builder" class="cta-button">Start Free Trial</a>
+        <a href="https://quiz-builder.duckdns.org" class="cta-button">Upgrade Now</a>
       </div>
 
       <!-- Enterprise Plan -->
       <div class="plan">
         <div class="plan-name">Enterprise</div>
         <div class="plan-price">
-          <span class="currency">$</span>99.99
+          <span class="currency">$</span>299
           <span class="period">/month</span>
         </div>
         <div class="plan-description">Enterprise-grade solution with unlimited everything</div>
@@ -256,9 +254,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           <li>SLA guarantee</li>
           <li>Advanced API access</li>
           <li>Phone support</li>
-          <li>30-day free trial</li>
         </ul>
-        <a href="https://apps.shopify.com/product-quiz-builder" class="cta-button">Contact Sales</a>
+        <a href="https://quiz-builder.duckdns.org" class="cta-button">Contact Sales</a>
       </div>
     </div>
 

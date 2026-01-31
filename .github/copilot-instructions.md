@@ -1,4 +1,4 @@
-# AI Agent Instructions - Shopify Product Quiz Builder
+# AI Agent Instructions - QuizCraft
 
 ## Project Overview
 

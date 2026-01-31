@@ -1,5 +1,5 @@
 # Contabo VPS Deployment Guide
-**Product Quiz Builder - Deploy to Existing Contabo Server**
+**QuizCraft - Deploy to Existing Contabo Server**
 
 Last Updated: October 25, 2025
 
@@ -436,7 +436,7 @@ sudo systemctl status nginx  # Should be active (running)
 ### 14.1 Update URLs in Partner Dashboard
 
 1. Go to: https://partners.shopify.com
-2. Navigate to: **Apps → Product Quiz Builder → Configuration**
+2. Navigate to: **Apps → QuizCraft → Configuration**
 3. Update **App URL:** `https://quiz.yourdomain.com`
 4. Update **Allowed redirection URL(s):**
    - `https://quiz.yourdomain.com/auth/login`
@@ -461,7 +461,7 @@ This will sync your configuration and register webhooks.
 
 ### 15.1 Install on Development Store
 
-1. Partner Dashboard → Apps → Product Quiz Builder
+1. Partner Dashboard → Apps → QuizCraft
 2. Click "Select store" → Choose your development store
 3. Click "Install app"
 4. Should redirect through OAuth flow

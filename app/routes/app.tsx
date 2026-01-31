@@ -35,6 +35,7 @@ export default function App() {
         <s-link href="/app">Home</s-link>
         <s-link href="/app/quizzes">Quizzes</s-link>
         <s-link href="/app/billing">Billing</s-link>
+        <s-link href="/app/webhooks">Webhooks</s-link>
         <s-link href="/app/additional">Additional page</s-link>
       </s-app-nav>
       <Outlet />

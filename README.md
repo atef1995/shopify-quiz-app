@@ -1,4 +1,4 @@
-# AI-Powered Product Quiz Builder
+# AI-Powered QuizCraft
 
 An intelligent Shopify app that helps merchants boost conversions through interactive product recommendation quizzes. Built with React Router, Prisma, and AI-powered question generation.
 

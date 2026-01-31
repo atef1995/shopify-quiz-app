@@ -26,6 +26,8 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
         select: {
           id: true,
           text: true,
+          order: true,
+          analytics: true,
         },
       },
       results: {
@@ -84,6 +86,28 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     };
   });
 
+  // Parse advanced metrics
+  let advancedMetrics = null;
+  try {
+    advancedMetrics = analytics.advancedMetrics ? JSON.parse(analytics.advancedMetrics) : null;
+  } catch (error) {
+    console.error('Failed to parse advanced metrics:', error);
+  }
+
+  // Format question analytics
+  const questionAnalytics = quiz.questions.map(question => ({
+    id: question.id,
+    text: question.text,
+    order: question.order,
+    views: question.analytics?.views || 0,
+    completions: question.analytics?.completions || 0,
+    dropOffs: advancedMetrics?.dropOffPoints?.[question.id] || 0,
+    averageTime: question.analytics?.averageTime || 0,
+    completionRate: question.analytics?.views > 0
+      ? ((question.analytics.completions / question.analytics.views) * 100).toFixed(1)
+      : "0",
+  }));
+
   return {
     quiz: {
       id: quiz.id,
@@ -98,13 +122,15 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       completionRate,
       emailCaptureRate,
       averageRevenue,
+      advancedMetrics,
     },
+    questionAnalytics,
     recentResults,
   };
 };
 
 export default function QuizAnalytics() {
-  const { quiz, analytics, recentResults } = useLoaderData<typeof loader>();
+  const { quiz, analytics, questionAnalytics, recentResults } = useLoaderData<typeof loader>();
   const navigate = useNavigate();
 
   return (
@@ -197,6 +223,96 @@ export default function QuizAnalytics() {
           )}
         </s-stack>
       </s-section>
+
+      {/* Advanced Analytics */}
+      {analytics.advancedMetrics && (
+        <>
+          {/* Average Completion Time */}
+          <s-section heading="Quiz Performance">
+            <s-grid columns={2}>
+              <s-box
+                padding="base"
+                borderWidth="base"
+                borderRadius="base"
+                background="surface"
+              >
+                <s-stack direction="block" gap="tight">
+                  <s-text variant="body-sm" color="subdued">
+                    Average Completion Time
+                  </s-text>
+                  <s-text variant="heading-lg">
+                    {analytics.advancedMetrics.averageCompletionTime
+                      ? `${Math.round(analytics.advancedMetrics.averageCompletionTime)}s`
+                      : "N/A"}
+                  </s-text>
+                </s-stack>
+              </s-box>
+
+              <s-box
+                padding="base"
+                borderWidth="base"
+                borderRadius="base"
+                background="surface"
+              >
+                <s-stack direction="block" gap="tight">
+                  <s-text variant="body-sm" color="subdued">
+                    Conversion Rate
+                  </s-text>
+                  <s-text variant="heading-lg">
+                    {analytics.advancedMetrics.conversionFunnel?.completionRate?.toFixed(1) || 0}%
+                  </s-text>
+                </s-stack>
+              </s-box>
+            </s-grid>
+          </s-section>
+
+          {/* Question-by-Question Analysis */}
+          {questionAnalytics.length > 0 && (
+            <s-section heading="Question Analysis">
+              <s-data-table>
+                <s-table>
+                  <s-table-head>
+                    <s-table-row>
+                      <s-table-header>Question</s-table-header>
+                      <s-table-header>Views</s-table-header>
+                      <s-table-header>Completions</s-table-header>
+                      <s-table-header>Drop-offs</s-table-header>
+                      <s-table-header>Avg Time</s-table-header>
+                      <s-table-header>Completion Rate</s-table-header>
+                    </s-table-row>
+                  </s-table-head>
+                  <s-table-body>
+                    {questionAnalytics.map((question) => (
+                      <s-table-row key={question.id}>
+                        <s-table-cell>
+                          <s-text variant="body-sm" fontWeight="medium">
+                            {question.order + 1}. {question.text}
+                          </s-text>
+                        </s-table-cell>
+                        <s-table-cell>{question.views}</s-table-cell>
+                        <s-table-cell>{question.completions}</s-table-cell>
+                        <s-table-cell>
+                          <s-text variant={question.dropOffs > 0 ? "body-sm" : undefined} color={question.dropOffs > 0 ? "critical" : undefined}>
+                            {question.dropOffs}
+                          </s-text>
+                        </s-table-cell>
+                        <s-table-cell>
+                          {question.averageTime > 0 ? `${Math.round(question.averageTime)}s` : "N/A"}
+                        </s-table-cell>
+                        <s-table-cell>
+                          <s-text variant="body-sm" color={parseFloat(question.completionRate) < 80 ? "critical" : "success"}>
+                            {question.completionRate}%
+                          </s-text>
+                        </s-table-cell>
+                      </s-table-row>
+                    ))}
+                  </s-table-body>
+                </s-table>
+              </s-data-table>
+            </s-section>
+          )}
+        </>
+      )}
 
       {/* Recent Completions */}
       <s-section heading="Recent Completions">

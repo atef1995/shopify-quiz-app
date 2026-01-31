@@ -2,30 +2,28 @@
  * Billing and Usage Tracking Utilities
  *
  * Handles freemium tier management, usage limits,
- * and subscription upgrades for the Quiz Builder app.
+ * and subscription status syncing for the Quiz Builder app.
  *
- * Integrated with Shopify Billing API for payment collection.
+ * Integrated with Shopify's Managed Pricing system.
  *
  * BILLING FLOW:
- * 1. User clicks "Upgrade" button → app.billing.upgrade.tsx creates charge
- * 2. User approves charge in Shopify admin → redirected to app.billing.callback.tsx
- * 3. Callback verifies charge status → activates subscription in database
+ * 1. Merchant clicks "Manage Billing" → redirected to Shopify's billing page
+ * 2. Merchant selects/upgrades plan in Shopify admin → subscription created automatically
+ * 3. Webhook or API query detects plan change → database synced
  * 4. Usage tracking enforces limits at quiz submission (api.quiz.submit.tsx)
  * 5. Monthly resets happen automatically when period expires
  *
  * IMPLEMENTATION STATUS:
- * ✅ Database schema with Shopify charge tracking fields
- * ✅ GraphQL mutations for creating/canceling charges (billing-api.server.ts)
- * ✅ Upgrade flow with confirmation URL redirect
- * ✅ Callback handler to activate subscriptions
- * ✅ Cancel/downgrade functionality
+ * ✅ Database schema with Shopify subscription tracking fields
+ * ✅ GraphQL queries for checking active subscriptions (billing-api.server.ts)
+ * ✅ Managed billing redirect flow
+ * ✅ Subscription status syncing on app load
  * ✅ Usage limit enforcement at quiz submission
- * ⚠️  Subscription verification relies on database status (should query Shopify API)
+ * ✅ Subscription restoration on app reinstall (NEW)
  * ⚠️  No webhook handlers for subscription updates (SUBSCRIPTIONS_UPDATE webhook needed)
  * ⚠️  Test mode hardcoded (isTest=true) - needs environment variable
  *
  * TODO: Add webhook handler for SUBSCRIPTION_BILLING_ATTEMPTS to detect payment failures
- * TODO: Query Shopify API in getOrCreateSubscription to verify charge is still active
  * TODO: Handle subscription pauses/freezes (FROZEN status)
  * TODO: Add trial period logic (14 days free for all tiers)
  */
@@ -112,6 +110,30 @@ export type TierFeature =
   | "custom_integrations";
 
 export type SubscriptionTier = "free" | "growth" | "pro" | "enterprise";
+
+/**
+ * Map Shopify subscription data to our tier system
+ *
+ * @param shopifySubscription - Subscription data from Shopify API
+ * @returns Our internal tier name
+ */
+function mapShopifySubscriptionToTier(shopifySubscription: any): SubscriptionTier {
+  // Extract price from the subscription
+  const lineItems = shopifySubscription.lineItems || [];
+  if (lineItems.length === 0) return "free";
+
+  const price = lineItems[0]?.plan?.pricingDetails?.price?.amount;
+  if (!price) return "free";
+
+  const priceAmount = parseFloat(price);
+
+  // Map prices to tiers (matching our TIER_LIMITS)
+  if (priceAmount >= 299) return "enterprise";
+  if (priceAmount >= 99) return "pro";
+  if (priceAmount >= 29) return "growth";
+
+  return "free";
+}
 
 /**
  * Check if shop has access to a specific feature based on their tier
@@ -291,15 +313,62 @@ export async function getQuizUsageStats(shop: string): Promise<{
  *
  * Date calculation properly handles month boundaries (e.g., Jan 31 + 1 month = Feb 28).
  *
- * NOTE: Currently uses database status only. In production, should also verify
- * subscription is still active in Shopify (charge not cancelled/expired).
- * Use getActiveSubscriptions() from billing-api.server.ts to cross-check.
+ * NOTE: Now verifies active subscriptions with Shopify API on app reinstall.
+ * This ensures paid subscriptions are restored when app is reinstalled.
  *
  * TODO: Add trial period logic (14 days free for all tiers)
  * TODO: Track signup date for cohort analysis
- * TODO: Query Shopify API to verify subscription status matches database
  */
-export async function getOrCreateSubscription(shop: string) {
+export async function getOrCreateSubscription(shop: string, admin?: any) {
+  // For managed pricing, always check Shopify first to get the current subscription status
+  // This ensures we have the latest data from Shopify's billing system
+  if (admin) {
+    try {
+      const { getActiveSubscriptions } = await import("./billing-api.server");
+      const activeSubscriptions = await getActiveSubscriptions(admin);
+
+      if (activeSubscriptions.length > 0) {
+        // Found active subscription in Shopify - use it
+        const shopifySub = activeSubscriptions[0]; // Use the first active subscription
+
+        // Map Shopify subscription to our tier system
+        const tier = mapShopifySubscriptionToTier(shopifySub);
+
+        const now = new Date();
+        const periodEnd = shopifySub.currentPeriodEnd
+          ? new Date(shopifySub.currentPeriodEnd)
+          : new Date(now.getFullYear(), now.getMonth() + 1, now.getDate());
+
+        // Upsert to sync with database
+        const subscription = await prisma.subscription.upsert({
+          where: { shop },
+          update: {
+            tier,
+            shopifySubscriptionId: shopifySub.id,
+            status: "active",
+            currentPeriodStart: now,
+            currentPeriodEnd: periodEnd,
+          },
+          create: {
+            shop,
+            tier,
+            shopifySubscriptionId: shopifySub.id,
+            status: "active",
+            currentPeriodStart: now,
+            currentPeriodEnd: periodEnd,
+          },
+        });
+
+        console.log(`Synced ${tier} subscription for shop ${shop}`);
+        return subscription;
+      }
+    } catch (error) {
+      console.error(`Failed to check Shopify subscriptions for ${shop}:`, error);
+      // Continue with database fallback if API call fails
+    }
+  }
+
+  // Fallback to database record or create free tier
   let subscription = await prisma.subscription.findUnique({
     where: { shop },
   });
@@ -455,8 +524,8 @@ export async function incrementCompletionCount(shop: string) {
 /**
  * Get usage statistics for a shop
  */
-export async function getUsageStats(shop: string) {
-  const subscription = await getOrCreateSubscription(shop);
+export async function getUsageStats(shop: string, admin?: any) {
+  const subscription = await getOrCreateSubscription(shop, admin);
   const tierLimit = TIER_LIMITS[subscription.tier as SubscriptionTier];
 
   const percentUsed =
