@@ -121,10 +121,6 @@ export default function BillingSuccess() {
                     </s-stack>
                     <s-stack direction="inline" gap="tight" align="start">
                       <s-icon source="checkmark" />
-                      <s-text variant="body-sm">Custom integrations</s-text>
-                    </s-stack>
-                    <s-stack direction="inline" gap="tight" align="start">
-                      <s-icon source="checkmark" />
                       <s-text variant="body-sm">Dedicated account manager</s-text>
                     </s-stack>
                   </>

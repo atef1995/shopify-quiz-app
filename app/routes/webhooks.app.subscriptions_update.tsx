@@ -13,6 +13,7 @@ import type { ActionFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { logger } from "../lib/logger.server";
+import type { SubscriptionTier } from "../lib/billing.server";
 
 /**
  * Map Shopify subscription status to our internal status
@@ -40,8 +41,25 @@ function mapShopifyStatus(shopifyStatus: string): string {
   }
 }
 
+/**
+ * Map subscription price to our tier system
+ *
+ * Extracts price from line items and maps to tier
+ */
+function mapPriceToTier(lineItems: any[]): SubscriptionTier {
+  if (!lineItems || lineItems.length === 0) return "free";
+
+  const priceAmount = parseFloat(lineItems[0]?.plan?.pricing_details?.price?.amount || "0");
+
+  if (priceAmount >= 299) return "enterprise";
+  if (priceAmount >= 99) return "pro";
+  if (priceAmount >= 29) return "growth";
+
+  return "free";
+}
+
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { topic, shop, payload } = await authenticate.webhook(request);
+  const { topic, shop, payload, admin } = await authenticate.webhook(request);
 
   logger.webhook(topic, shop || "unknown", "Received subscription update");
 
@@ -63,8 +81,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     const shopifySubscriptionId = subscriptionData.admin_graphql_api_id;
     const status = subscriptionData.status;
+    const lineItems = subscriptionData.line_items || [];
 
-    log.info("Processing subscription update", { shopifySubscriptionId, status });
+    log.info("Processing subscription update", { shopifySubscriptionId, status, lineItems });
 
     // Find existing subscription by shop
     const existingSubscription = await prisma.subscription.findUnique({
@@ -94,21 +113,106 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     // If subscription was cancelled/declined/expired, downgrade to free
     const shouldDowngrade = ["cancelled", "expired"].includes(newStatus);
 
+    // If subscription is active but lineItems are empty, keep existing tier
+    // Shopify webhooks don't include pricing details, so we can't determine tier from webhook
+    let updateData: any = {
+      status: newStatus,
+      shopifySubscriptionId: shopifySubscriptionId,
+      updatedAt: new Date(),
+    };
+
+    if (shouldDowngrade) {
+      // Before downgrading, check if there's another active subscription (upgrade scenario)
+      // When upgrading plans, Shopify cancels old subscription and creates new one
+      // We don't want to downgrade if a new subscription is already active
+      if (admin) {
+        try {
+          const { getActiveSubscriptions } = await import("../lib/billing-api.server");
+          const activeSubscriptions = await getActiveSubscriptions(admin);
+          
+          if (activeSubscriptions.length > 0) {
+            // There's another active subscription - this is an upgrade, not a real cancellation
+            // Extract tier from the active subscription
+            const activeSub = activeSubscriptions[0];
+            if (activeSub.lineItems?.length > 0) {
+              const priceAmount = parseFloat(activeSub.lineItems[0]?.plan?.pricingDetails?.price?.amount || "0");
+              let newTier: SubscriptionTier = "free";
+              if (priceAmount >= 299) newTier = "enterprise";
+              else if (priceAmount >= 99) newTier = "pro";
+              else if (priceAmount >= 29) newTier = "growth";
+              
+              updateData.tier = newTier;
+              updateData.shopifySubscriptionId = activeSub.id;
+              log.info("Detected plan upgrade - syncing new active subscription", { 
+                oldSubscriptionId: shopifySubscriptionId,
+                newSubscriptionId: activeSub.id,
+                newTier,
+              });
+            }
+          } else {
+            // No other active subscription - this is a real cancellation
+            updateData.tier = "free";
+            updateData.shopifySubscriptionId = null;
+            log.info("Real cancellation detected - downgrading to free");
+          }
+        } catch (error) {
+          log.error("Failed to check for active subscriptions", error);
+          // Fall back to downgrade
+          updateData.tier = "free";
+          updateData.shopifySubscriptionId = null;
+        }
+      } else {
+        // No admin context - fall back to downgrade
+        updateData.tier = "free";
+        updateData.shopifySubscriptionId = null;
+      }
+    } else if (lineItems.length > 0) {
+      // Webhook includes pricing - extract tier
+      const newTier = mapPriceToTier(lineItems);
+      updateData.tier = newTier;
+      log.info("Extracted tier from webhook pricing", { newTier, price: lineItems[0]?.plan?.pricing_details?.price?.amount });
+    } else if (newStatus === "active" && admin) {
+      // Active subscription but no pricing in webhook - query Shopify API for current tier
+      log.info("Webhook has no pricing data - querying Shopify API for active subscriptions");
+      try {
+        const { getActiveSubscriptions } = await import("../lib/billing-api.server");
+        const activeSubscriptions = await getActiveSubscriptions(admin);
+        
+        if (activeSubscriptions.length > 0) {
+          // Find the subscription that matches this webhook
+          const matchingSub = activeSubscriptions.find((sub: any) => sub.id === shopifySubscriptionId);
+          if (matchingSub && matchingSub.lineItems?.length > 0) {
+            const { TIER_LIMITS } = await import("../lib/billing.server");
+            // Extract price from API response
+            const priceAmount = parseFloat(matchingSub.lineItems[0]?.plan?.pricingDetails?.price?.amount || "0");
+            let apiTier: SubscriptionTier = "free";
+            if (priceAmount >= 299) apiTier = "enterprise";
+            else if (priceAmount >= 99) apiTier = "pro";
+            else if (priceAmount >= 29) apiTier = "growth";
+            
+            updateData.tier = apiTier;
+            log.info("Extracted tier from Shopify API", { tier: apiTier, price: priceAmount });
+          }
+        }
+      } catch (error) {
+        log.error("Failed to query Shopify API for tier", error);
+        // Keep existing tier as fallback
+      }
+    } else {
+      // Active subscription but no pricing in webhook and no admin - keep existing tier
+      log.info("Webhook has no pricing data - keeping existing tier");
+    }
+
     await prisma.subscription.update({
       where: { shop },
-      data: {
-        status: newStatus,
-        shopifySubscriptionId: shopifySubscriptionId,
-        // Downgrade to free tier if subscription ended
-        ...(shouldDowngrade && {
-          tier: "free",
-          shopifySubscriptionId: null,
-        }),
-        updatedAt: new Date(),
-      },
+      data: updateData,
     });
 
-    log.info("Updated subscription", { newStatus, downgraded: shouldDowngrade });
+    log.info("Updated subscription", { 
+      newStatus, 
+      tier: updateData.tier || "(unchanged)", 
+      downgraded: shouldDowngrade 
+    });
 
     return new Response("OK", { status: 200 });
   } catch (error) {

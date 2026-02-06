@@ -53,8 +53,10 @@
 
   /**
    * Send webhook event (non-blocking)
+   * TODO: Custom integrations feature disabled - uncomment when ready
    */
   function sendWebhook(event, data = {}) {
+    /* Feature disabled
     fetch(`${API_BASE_URL}/api/webhooks/${event}`, {
       method: 'POST',
       headers: {
@@ -67,6 +69,7 @@
     }).catch(error => {
       console.warn(`Webhook delivery failed for ${event}:`, error);
     });
+    */
   }
 
   /**
@@ -343,11 +346,12 @@
       quizStartTime = Date.now();
       questionTiming = {};
 
+      // TODO: Custom integrations feature disabled - uncomment when ready
       // Send quiz started webhook
-      sendWebhook('quiz_started', {
-        quizTitle: quizData.title,
-        totalQuestions: quizData.questions.length,
-      });
+      // sendWebhook('quiz_started', {
+      //   quizTitle: quizData.title,
+      //   totalQuestions: quizData.questions.length,
+      // });
 
       renderQuestion();
       updateProgress();
@@ -501,14 +505,15 @@
     // Save progress to localStorage immediately
     saveProgress();
 
+    // TODO: Custom integrations feature disabled - uncomment when ready
     // Send question answered webhook
-    sendWebhook('question_answered', {
-      questionId: quizData.questions[currentQuestionIndex].id,
-      questionText: quizData.questions[currentQuestionIndex].text,
-      answer: option.text,
-      questionNumber: currentQuestionIndex + 1,
-      totalQuestions: quizData.questions.length,
-    });
+    // sendWebhook('question_answered', {
+    //   questionId: quizData.questions[currentQuestionIndex].id,
+    //   questionText: quizData.questions[currentQuestionIndex].text,
+    //   answer: option.text,
+    //   questionNumber: currentQuestionIndex + 1,
+    //   totalQuestions: quizData.questions.length,
+    // });
 
     // Enable next button
     document.querySelector('.quiz-btn-next').disabled = false;
@@ -583,13 +588,14 @@
       e.preventDefault();
       customerEmail = form.querySelector('input[name="email"]').value;
 
+      // TODO: Custom integrations feature disabled - uncomment when ready
       // Send email captured webhook
-      sendWebhook('email_captured', {
-        email: customerEmail,
-        quizTitle: quizData.title,
-        totalQuestions: quizData.questions.length,
-        answersCount: answers.length,
-      });
+      // sendWebhook('email_captured', {
+      //   email: customerEmail,
+      //   quizTitle: quizData.title,
+      //   totalQuestions: quizData.questions.length,
+      //   answersCount: answers.length,
+      // });
 
       await submitQuizResults();
     });

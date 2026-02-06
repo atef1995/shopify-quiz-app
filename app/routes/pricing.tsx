@@ -249,7 +249,6 @@ export const loader = async () => {
         <ul class="features">
           <li>Unlimited quizzes & completions</li>
           <li>White-label options</li>
-          <li>Custom integrations</li>
           <li>Dedicated account manager</li>
           <li>SLA guarantee</li>
           <li>Advanced API access</li>

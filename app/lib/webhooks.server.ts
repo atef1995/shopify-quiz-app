@@ -1,6 +1,13 @@
 /**
  * Webhook Delivery Utilities
  *
+ * TODO: FEATURE CURRENTLY DISABLED - Custom integrations feature removed from frontend
+ * This implementation is kept for future use when Zapier/webhook integration setup is ready.
+ * To re-enable:
+ * 1. Uncomment sendWebhook() calls in api.quiz.submit.tsx and quiz-embed.js
+ * 2. Restore navigation link in app.tsx
+ * 3. Add back to pricing materials
+ *
  * Handles delivery of webhook events for custom integrations.
  * Supports quiz events like started, question answered, completed, and email captured.
  *

@@ -1,6 +1,6 @@
 import type { ActionFunctionArgs } from "react-router";
 import prisma from "../db.server";
-import { canCreateCompletion, incrementCompletionCount } from "../lib/billing.server";
+import { incrementCompletionCount } from "../lib/billing.server";
 import { unauthenticated } from "../shopify.server";
 import {
   getCorsHeaders,
@@ -175,22 +175,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     // Store shop domain for CORS headers
     shopDomain = quiz.shop;
 
-    // Check usage limits for this shop
-    const usageCheck = await canCreateCompletion(quiz.shop);
-    if (!usageCheck.allowed) {
-      return Response.json(
-        {
-          error: "Usage limit reached",
-          message: usageCheck.reason,
-          currentUsage: usageCheck.currentUsage,
-          limit: usageCheck.limit,
-        },
-        { 
-          status: 429,
-          headers: getCorsHeaders(request, shopDomain),
-        }
-      );
-    }
+    // NOTE: No usage limit checks here - customer quiz submissions should NEVER
+    // be blocked by merchant's plan limits. Limits only apply to quiz creation.
+    // We still track completions for analytics but make it non-blocking.
 
     // Generate product recommendations based on answers
     const recommendedProducts = await generateRecommendations(quiz, answers, quiz.shop);
@@ -274,22 +261,24 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       console.error('Failed to update advanced analytics:', error);
     }
 
-    // Increment completion count for billing tracking AFTER transaction
-    // SQLite can't handle concurrent writes, so this must be outside the transaction
+    // Track completion count for analytics AFTER transaction (non-blocking)
+    // This is for merchant analytics/reporting only and should NEVER block customer submissions
     try {
       await incrementCompletionCount(quiz.shop);
-    } catch {
-      // Billing update failure is non-critical - don't fail the submission
+    } catch (error) {
+      // Analytics failure is non-critical - log but don't fail submission
+      console.error(`[Analytics] Failed to track completion for quiz ${quizId}:`, error);
     }
 
+    // TODO: Custom integrations feature disabled - uncomment when ready
     // Send quiz completed webhook (non-blocking)
-    sendWebhook(quiz.shop, 'quiz_completed', quizId, {
-      email: finalEmail,
-      answersCount: answers.length,
-      recommendedProductsCount: recommendedProducts.length,
-      totalTimeSeconds: timing?.totalTimeSeconds,
-      quizTitle: quiz.title,
-    });
+    // sendWebhook(quiz.shop, 'quiz_completed', quizId, {
+    //   email: finalEmail,
+    //   answersCount: answers.length,
+    //   recommendedProductsCount: recommendedProducts.length,
+    //   totalTimeSeconds: timing?.totalTimeSeconds,
+    //   quizTitle: quiz.title,
+    // });
 
     return Response.json(
       {

@@ -120,12 +120,28 @@ export type SubscriptionTier = "free" | "growth" | "pro" | "enterprise";
 function mapShopifySubscriptionToTier(shopifySubscription: any): SubscriptionTier {
   // Extract price from the subscription
   const lineItems = shopifySubscription.lineItems || [];
-  if (lineItems.length === 0) return "free";
+  
+  console.log('[Billing] Mapping subscription to tier:', {
+    subscriptionId: shopifySubscription.id,
+    lineItemsCount: lineItems.length,
+    lineItems: JSON.stringify(lineItems, null, 2),
+  });
+  
+  if (lineItems.length === 0) {
+    console.warn('[Billing] No line items found in subscription - defaulting to free');
+    return "free";
+  }
 
   const price = lineItems[0]?.plan?.pricingDetails?.price?.amount;
-  if (!price) return "free";
+  if (!price) {
+    console.warn('[Billing] No price found in line items - defaulting to free', {
+      lineItem: JSON.stringify(lineItems[0], null, 2),
+    });
+    return "free";
+  }
 
   const priceAmount = parseFloat(price);
+  console.log('[Billing] Extracted price:', priceAmount);
 
   // Map prices to tiers (matching our TIER_LIMITS)
   if (priceAmount >= 299) return "enterprise";
@@ -334,6 +350,16 @@ export async function getOrCreateSubscription(shop: string, admin?: any) {
         // Map Shopify subscription to our tier system
         const tier = mapShopifySubscriptionToTier(shopifySub);
 
+        // SAFEGUARD: Never downgrade from a paid tier to free unless explicitly cancelled
+        // This prevents issues where Shopify API returns incomplete data
+        const existingSubscription = await prisma.subscription.findUnique({
+          where: { shop },
+        });
+
+        const shouldUpdateTier = tier !== "free" || 
+                                 !existingSubscription || 
+                                 existingSubscription.tier === "free";
+
         const now = new Date();
         const periodEnd = shopifySub.currentPeriodEnd
           ? new Date(shopifySub.currentPeriodEnd)
@@ -343,7 +369,7 @@ export async function getOrCreateSubscription(shop: string, admin?: any) {
         const subscription = await prisma.subscription.upsert({
           where: { shop },
           update: {
-            tier,
+            ...(shouldUpdateTier && { tier }), // Only update tier if safe to do so
             shopifySubscriptionId: shopifySub.id,
             status: "active",
             currentPeriodStart: now,
@@ -359,7 +385,7 @@ export async function getOrCreateSubscription(shop: string, admin?: any) {
           },
         });
 
-        console.log(`Synced ${tier} subscription for shop ${shop}`);
+        console.log(`Synced subscription for shop ${shop} - Tier: ${subscription.tier} (Shopify returned: ${tier})`);
         return subscription;
       }
     } catch (error) {
@@ -401,106 +427,35 @@ export async function getOrCreateSubscription(shop: string, admin?: any) {
 }
 
 /**
- * Check if shop can create more quiz completions
+ * NOTE: canCreateCompletion() function removed - customer quiz submissions
+ * should NEVER be blocked by merchant plan limits. Completion counts are
+ * tracked for analytics only via incrementCompletionCount().
+ * 
+ * Usage limits only apply to:
+ * - Number of quizzes created (enforced in app.quizzes.new.tsx)
+ * - Number of questions per quiz (enforced in app.quizzes.$id.edit.tsx)
+ * - NOT customer quiz submissions (would break merchant's quizzes)
  */
-export async function canCreateCompletion(shop: string): Promise<{
-  allowed: boolean;
-  reason?: string;
-  currentUsage: number;
-  limit: number;
-  tier: string;
-}> {
-  let subscription = await getOrCreateSubscription(shop);
-  const tierLimit = TIER_LIMITS[subscription.tier as SubscriptionTier];
-
-  // Check if subscription is active
-  if (subscription.status !== "active") {
-    return {
-      allowed: false,
-      reason: "Subscription is not active",
-      currentUsage: subscription.currentPeriodCompletions,
-      limit: tierLimit.monthlyCompletions,
-      tier: subscription.tier,
-    };
-  }
-
-  // Check if we need to reset the period
-  const now = new Date();
-  // NOTE: Server timezone might not match shop timezone
-  //       Acceptable for MVP as it only affects reset timing by a few hours
-  // TODO: Use shop's timezone from Shopify API for exact reset timing
-  // TODO: Add cron job to reset periods instead of doing it on-demand
-  if (now > subscription.currentPeriodEnd) {
-    // Reset usage for new period using proper date math
-    const newPeriodEnd = new Date(
-      now.getFullYear(),
-      now.getMonth() + 1,
-      now.getDate(),
-    );
-
-    // Atomic update to prevent race condition where multiple requests
-    // try to reset the period simultaneously
-    const updated = await prisma.subscription.updateMany({
-      where: {
-        shop,
-        currentPeriodEnd: { lt: now }, // Only update if period actually expired
-      },
-      data: {
-        currentPeriodCompletions: 0,
-        currentPeriodStart: now,
-        currentPeriodEnd: newPeriodEnd,
-      },
-    });
-
-    // If we successfully reset the period, return fresh limits
-    if (updated.count > 0) {
-      return {
-        allowed: true,
-        currentUsage: 0,
-        limit: tierLimit.monthlyCompletions,
-        tier: subscription.tier,
-      };
-    }
-
-    // If another request already reset it, re-fetch the subscription
-    subscription =
-      (await prisma.subscription.findUnique({
-        where: { shop },
-      })) || subscription;
-  }
-
-  // Check usage limits
-  const isUnlimited = tierLimit.monthlyCompletions === -1;
-  const withinLimit =
-    isUnlimited ||
-    subscription.currentPeriodCompletions < tierLimit.monthlyCompletions;
-
-  return {
-    allowed: withinLimit,
-    reason: withinLimit
-      ? undefined
-      : "Monthly completion limit reached. Please upgrade your plan.",
-    currentUsage: subscription.currentPeriodCompletions,
-    limit: tierLimit.monthlyCompletions,
-    tier: subscription.tier,
-  };
-}
 
 /**
- * Increment completion count for a shop atomically
+ * Track completion count for analytics (non-blocking)
+ *
+ * This function tracks quiz completions for merchant analytics and reporting.
+ * It should NEVER throw errors or block customer quiz submissions.
  *
  * Uses atomic database operation to prevent race conditions.
  * Even with multiple simultaneous requests, the database ensures
  * the counter is incremented correctly.
  *
+ * NOTE: Completion counts are for analytics only, NOT for enforcing usage limits.
+ * Customer quiz submissions should never be blocked by merchant plan limits.
+ *
  * TODO: Make this idempotent to prevent double-counting if retried
  * TODO: Add audit log of all completions for billing dispute resolution
  */
-export async function incrementCompletionCount(shop: string) {
+export async function incrementCompletionCount(shop: string): Promise<void> {
   try {
     // Atomic increment - database handles concurrency control
-    // Even with multiple simultaneous requests, the database ensures
-    // the counter is incremented correctly without race conditions
     await prisma.subscription.update({
       where: { shop },
       data: {
@@ -510,14 +465,14 @@ export async function incrementCompletionCount(shop: string) {
       },
     });
   } catch (error) {
-    // Log error but don't throw - billing tracking failure shouldn't
-    // block quiz completion (user already got their recommendations)
+    // Log error but don't throw - analytics tracking failure shouldn't
+    // block quiz completion (customer already got their recommendations)
     console.error(
-      `[Billing] Failed to increment completion count for ${shop}:`,
+      `[Analytics] Failed to track completion count for ${shop}:`,
       error,
     );
     // TODO: Send alert to monitoring service (Sentry, DataDog, etc.)
-    throw error; // Re-throw so caller can handle
+    // NOTE: Intentionally not re-throwing - this is non-critical analytics tracking
   }
 }
 

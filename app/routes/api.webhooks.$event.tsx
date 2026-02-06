@@ -5,6 +5,9 @@ import prisma from "../db.server";
 /**
  * Public API endpoint for webhook events from storefront
  *
+ * NOTE: FEATURE CURRENTLY DISABLED - Custom integrations feature removed from frontend
+ * This endpoint is kept for future use but calls to it are commented out in quiz-embed.js
+ *
  * This endpoint receives webhook events from the quiz embed
  * and forwards them to configured webhook URLs.
  *

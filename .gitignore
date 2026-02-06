@@ -67,3 +67,7 @@ nul
 .prettierrc
 BILLING_IMPLEMENTATION.md
 package-lock.json
+set-enterprise.js
+check-subscription.js
+upgrade-to-enterprise.js
+prisma/dev.db
