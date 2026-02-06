@@ -10,30 +10,12 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import prisma from "../db.server";
 import OpenAI from "openai";
-import {
-  hasFeatureAccess,
-  canAddQuestion,
-} from "../lib/billing.server";
+import { hasFeatureAccess, canAddQuestion } from "../lib/billing.server";
 import { logger } from "../lib/logger.server";
-
-// Type definitions for AI-generated questions and products
-interface ProductNode {
-  id: string;
-  title: string;
-  productType?: string;
-  tags?: string[];
-  variants?: {
-    edges?: Array<{
-      node?: {
-        price?: string;
-      };
-    }>;
-  };
-}
-
-interface ProductEdge {
-  node: ProductNode;
-}
+import {
+  fetchProductsForAI,
+  type ProductNode,
+} from "../lib/ai-quiz-generation.server";
 
 interface GeneratedOption {
   text: string;
@@ -389,47 +371,19 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
         return { success: false, message: "Quiz not found" };
       }
 
-      // Fetch products from Shopify
-      const productsResponse = await admin.graphql(
-        `#graphql
-          query getProducts($first: Int!) {
-            products(first: $first) {
-              edges {
-                node {
-                  id
-                  title
-                  description
-                  productType
-                  tags
-                  vendor
-                  variants(first: 1) {
-                    edges {
-                      node {
-                        price
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        `,
-        {
-          variables: { first: 50 },
-        },
-      );
+      // Fetch products from Shopify using helper
+      const productsResult = await fetchProductsForAI(admin, session.shop, 50);
 
-      const productsData = await productsResponse.json();
-      const products: ProductNode[] =
-        productsData.data?.products?.edges?.map((edge: ProductEdge) => edge.node) || [];
-
-      if (products.length === 0) {
+      if (!productsResult.success || productsResult.products.length === 0) {
         return {
           success: false,
           message:
+            productsResult.error ||
             "No products found. Please add products to your store first.",
         };
       }
+
+      const products = productsResult.products;
 
       // Extract unique tags and types
       const productTags = new Set<string>();
@@ -455,8 +409,11 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
           );
           log.info("AI generated questions", { count: questions.length });
         } catch (aiError: unknown) {
-          const errorMessage = aiError instanceof Error ? aiError.message : "Unknown error";
-          log.error("AI generation failed, falling back to rule-based", { error: errorMessage });
+          const errorMessage =
+            aiError instanceof Error ? aiError.message : "Unknown error";
+          log.error("AI generation failed, falling back to rule-based", {
+            error: errorMessage,
+          });
           questions = generateBasicQuestions(
             products,
             Array.from(productTags),
@@ -543,6 +500,7 @@ export default function EditQuiz() {
   const fetcher = useFetcher<typeof action>();
   const shopify = useAppBridge();
   const navigate = useNavigate();
+  const isSubmitting = fetcher.state === "submitting";
 
   const [title, setTitle] = useState(quiz.title);
   const [description, setDescription] = useState(quiz.description || "");
@@ -562,6 +520,13 @@ export default function EditQuiz() {
   const [newOptionTypes, setNewOptionTypes] = useState<{
     [key: string]: string;
   }>({});
+
+  // Edit option state
+  const [editingOptionId, setEditingOptionId] = useState<string | null>(null);
+  const [editOptionText, setEditOptionText] = useState("");
+  const [editOptionImageUrl, setEditOptionImageUrl] = useState("");
+  const [editOptionTags, setEditOptionTags] = useState("");
+  const [editOptionTypes, setEditOptionTypes] = useState("");
 
   // Product matching state
   const [showProductBrowser, setShowProductBrowser] = useState<{
@@ -616,16 +581,20 @@ export default function EditQuiz() {
   );
   const [currentStatus, setCurrentStatus] = useState(quiz.status);
 
-  // Collapsible questions state - all expanded by default
+  // Collapsible questions state - initialize empty to avoid hydration issues
   const [expandedQuestions, setExpandedQuestions] = useState<{
     [key: string]: boolean;
-  }>(() => {
+  }>({});
+
+  // Initialize expanded questions after mount to avoid hydration mismatch
+  useEffect(() => {
     const initial: { [key: string]: boolean } = {};
     questions.forEach((q) => {
       initial[q.id] = true; // Start with all questions expanded
     });
-    return initial;
-  });
+    setExpandedQuestions(initial);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Only run once on mount, not when questions change
 
   const toggleQuestion = (questionId: string) => {
     setExpandedQuestions((prev) => ({
@@ -683,7 +652,9 @@ export default function EditQuiz() {
         setCurrentStatus("draft");
       }
     } else if (fetcher.data?.success === false) {
-      shopify.toast.show(fetcher.data.message || "An error occurred", { isError: true });
+      shopify.toast.show(fetcher.data.message || "An error occurred", {
+        isError: true,
+      });
     }
   }, [fetcher.data, shopify]);
 
@@ -805,6 +776,83 @@ export default function EditQuiz() {
     setNewOptionTypes((prev) => ({ ...prev, [questionId]: "" }));
     setSelectedProductIds((prev) => ({ ...prev, [questionId]: [] }));
     setSelectedProducts((prev) => ({ ...prev, [questionId]: [] }));
+  };
+
+  const handleStartEditOption = (optionId: string) => {
+    // Find the option data
+    let option = null;
+    for (const question of questions) {
+      const found = question.options.find((o) => o.id === optionId);
+      if (found) {
+        option = found;
+        break;
+      }
+    }
+
+    if (!option) return;
+
+    // Parse productMatching to populate form
+    let tags = "";
+    let types = "";
+    if (option.productMatching) {
+      try {
+        const matching =
+          typeof option.productMatching === "string"
+            ? JSON.parse(option.productMatching)
+            : option.productMatching;
+        tags = matching?.tags?.join(", ") || "";
+        types = matching?.types?.join(", ") || "";
+      } catch (error) {
+        console.error("Error parsing productMatching:", error);
+      }
+    }
+
+    setEditingOptionId(optionId);
+    setEditOptionText(option.text);
+    setEditOptionImageUrl(option.imageUrl || "");
+    setEditOptionTags(tags);
+    setEditOptionTypes(types);
+  };
+
+  const handleCancelEditOption = () => {
+    setEditingOptionId(null);
+    setEditOptionText("");
+    setEditOptionImageUrl("");
+    setEditOptionTags("");
+    setEditOptionTypes("");
+  };
+
+  const handleSaveEditOption = () => {
+    if (!editingOptionId) return;
+
+    if (!editOptionText.trim()) {
+      shopify.toast.show("Option text is required", { isError: true });
+      return;
+    }
+
+    // Validate that at least one matching criteria is provided
+    const hasTags = editOptionTags.trim().length > 0;
+    const hasTypes = editOptionTypes.trim().length > 0;
+
+    if (!hasTags && !hasTypes) {
+      shopify.toast.show(
+        "Please add at least one Product Tag OR Product Type for matching",
+        { isError: true },
+      );
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append("action", "updateOption");
+    formData.append("optionId", editingOptionId);
+    formData.append("optionText", editOptionText);
+    formData.append("imageUrl", editOptionImageUrl);
+    formData.append("productTags", editOptionTags);
+    formData.append("productTypes", editOptionTypes);
+    fetcher.submit(formData, { method: "POST" });
+
+    // Clear edit state
+    handleCancelEditOption();
   };
 
   const handleDeleteOption = (optionId: string) => {
@@ -1035,7 +1083,8 @@ export default function EditQuiz() {
               padding="base"
               borderWidth="base"
               borderRadius="base"
-              background="surface"
+              border="base"
+              background="subdued"
             >
               <s-stack direction="block" gap="base">
                 <s-stack direction="inline" gap="base" align="center">
@@ -1148,7 +1197,8 @@ export default function EditQuiz() {
                       padding="base"
                       borderWidth="base"
                       borderRadius="base"
-                      background="surface"
+                      border="base"
+                      background="subdued"
                     >
                       <s-stack direction="block" gap="base">
                         {/* Question Header - Always Visible */}
@@ -1231,74 +1281,220 @@ export default function EditQuiz() {
                                       borderRadius="base"
                                       background="subdued"
                                     >
-                                      <s-stack
-                                        direction="inline"
-                                        gap="base"
-                                        alignContent="baseline"
-                                        alignItems="baseline"
-                                      >
-                                        <s-stack direction="block" gap="tight">
-                                          <s-text>{option.text}</s-text>
-                                          {option.imageUrl && (
-                                            <s-text color="subdued">
-                                              Image: {option.imageUrl}
-                                            </s-text>
+                                      {editingOptionId === option.id ? (
+                                        // Edit mode
+                                        <s-stack direction="block" gap="base">
+                                          <s-text variant="heading-sm">
+                                            Edit Option
+                                          </s-text>
+                                          <s-text-field
+                                            label="Option Text"
+                                            value={editOptionText}
+                                            onChange={(e) =>
+                                              setEditOptionText(
+                                                (e.target as HTMLInputElement)
+                                                  .value,
+                                              )
+                                            }
+                                            placeholder="e.g., Casual everyday wear"
+                                          />
+                                          {question.type === "image_choice" && (
+                                            <s-text-field
+                                              label="Image URL (Optional)"
+                                              value={editOptionImageUrl}
+                                              onChange={(e) =>
+                                                setEditOptionImageUrl(
+                                                  (e.target as HTMLInputElement)
+                                                    .value,
+                                                )
+                                              }
+                                              placeholder="https://example.com/image.jpg"
+                                            />
                                           )}
-                                          {option.productMatching && (
-                                            <s-text
-                                              variant="body-sm"
-                                              color="subdued"
+                                          <s-text-field
+                                            label="Product Tags (comma-separated) *"
+                                            value={editOptionTags}
+                                            onChange={(e) =>
+                                              setEditOptionTags(
+                                                (e.target as HTMLInputElement)
+                                                  .value,
+                                              )
+                                            }
+                                            placeholder="casual, everyday, comfortable"
+                                            helpText="Products with these tags will be recommended"
+                                            requiredIndicator
+                                          />
+                                          {availableTags.length > 0 && (
+                                            <s-inline-stack wrap>
+                                              {availableTags
+                                                .slice(0, 10)
+                                                .map((tag) => (
+                                                  <s-button
+                                                    key={tag}
+                                                    size="micro"
+                                                    variant="plain"
+                                                    onClick={() => {
+                                                      const current =
+                                                        editOptionTags.trim();
+                                                      setEditOptionTags(
+                                                        current
+                                                          ? `${current}, ${tag}`
+                                                          : tag,
+                                                      );
+                                                    }}
+                                                  >
+                                                    + {tag}
+                                                  </s-button>
+                                                ))}
+                                            </s-inline-stack>
+                                          )}
+                                          <s-text-field
+                                            label="Product Types (comma-separated) *"
+                                            value={editOptionTypes}
+                                            onChange={(e) =>
+                                              setEditOptionTypes(
+                                                (e.target as HTMLInputElement)
+                                                  .value,
+                                              )
+                                            }
+                                            placeholder="t-shirt, jeans, sneakers"
+                                            helpText="Products of these types will be recommended"
+                                            requiredIndicator
+                                          />
+                                          {availableTypes.length > 0 && (
+                                            <s-inline-stack wrap>
+                                              {availableTypes
+                                                .slice(0, 10)
+                                                .map((type) => (
+                                                  <s-button
+                                                    key={type}
+                                                    size="micro"
+                                                    variant="plain"
+                                                    onClick={() => {
+                                                      const current =
+                                                        editOptionTypes.trim();
+                                                      setEditOptionTypes(
+                                                        current
+                                                          ? `${current}, ${type}`
+                                                          : type,
+                                                      );
+                                                    }}
+                                                  >
+                                                    + {type}
+                                                  </s-button>
+                                                ))}
+                                            </s-inline-stack>
+                                          )}
+                                          <s-stack
+                                            direction="inline"
+                                            gap="base"
+                                            align="end"
+                                          >
+                                            <s-button
+                                              variant="primary"
+                                              onClick={handleSaveEditOption}
+                                              disabled={isSubmitting}
                                             >
-                                              Matches:{" "}
-                                              {(() => {
-                                                try {
-                                                  // Handle both string and object cases
-                                                  const matching =
-                                                    typeof option.productMatching ===
-                                                    "string"
-                                                      ? JSON.parse(
-                                                          option.productMatching,
-                                                        )
-                                                      : option.productMatching;
-
-                                                  const parts = [];
-                                                  if (matching?.tags?.length)
-                                                    parts.push(
-                                                      `Tags: ${matching.tags.join(", ")}`,
-                                                    );
-                                                  if (matching?.types?.length)
-                                                    parts.push(
-                                                      `Types: ${matching.types.join(", ")}`,
-                                                    );
-
-                                                  return (
-                                                    parts.join(" | ") ||
-                                                    "No matching rules"
-                                                  );
-                                                } catch (error) {
-                                                  console.error(
-                                                    "Error parsing productMatching:",
-                                                    error,
-                                                    "Data:",
-                                                    option.productMatching,
-                                                  );
-                                                  return `Invalid matching data: ${typeof option.productMatching}`;
-                                                }
-                                              })()}
-                                            </s-text>
-                                          )}
+                                              Save Changes
+                                            </s-button>
+                                            <s-button
+                                              variant="tertiary"
+                                              onClick={handleCancelEditOption}
+                                              disabled={isSubmitting}
+                                            >
+                                              Cancel
+                                            </s-button>
+                                          </s-stack>
                                         </s-stack>
-                                        <s-button
-                                          variant="tertiary"
-                                          size="sm"
-                                          onClick={() =>
-                                            handleDeleteOption(option.id)
-                                          }
-                                          aria-label={`Delete option: ${option.text}`}
+                                      ) : (
+                                        // View mode
+                                        <s-stack
+                                          direction="inline"
+                                          gap="base"
+                                          alignContent="baseline"
+                                          alignItems="baseline"
                                         >
-                                          Delete
-                                        </s-button>
-                                      </s-stack>
+                                          <s-stack
+                                            direction="block"
+                                            gap="tight"
+                                          >
+                                            <s-text>{option.text}</s-text>
+                                            {option.imageUrl && (
+                                              <s-text color="subdued">
+                                                Image: {option.imageUrl}
+                                              </s-text>
+                                            )}
+                                            {option.productMatching && (
+                                              <s-text
+                                                variant="body-sm"
+                                                color="subdued"
+                                              >
+                                                Matches:{" "}
+                                                {(() => {
+                                                  try {
+                                                    // Handle both string and object cases
+                                                    const matching =
+                                                      typeof option.productMatching ===
+                                                      "string"
+                                                        ? JSON.parse(
+                                                            option.productMatching,
+                                                          )
+                                                        : option.productMatching;
+
+                                                    const parts = [];
+                                                    if (matching?.tags?.length)
+                                                      parts.push(
+                                                        `Tags: ${matching.tags.join(", ")}`,
+                                                      );
+                                                    if (matching?.types?.length)
+                                                      parts.push(
+                                                        `Types: ${matching.types.join(", ")}`,
+                                                      );
+
+                                                    return (
+                                                      parts.join(" | ") ||
+                                                      "No matching rules"
+                                                    );
+                                                  } catch (error) {
+                                                    console.error(
+                                                      "Error parsing productMatching:",
+                                                      error,
+                                                      "Data:",
+                                                      option.productMatching,
+                                                    );
+                                                    return `Invalid matching data: ${typeof option.productMatching}`;
+                                                  }
+                                                })()}
+                                              </s-text>
+                                            )}
+                                          </s-stack>
+                                          <s-stack
+                                            direction="inline"
+                                            gap="tight"
+                                          >
+                                            <s-button
+                                              variant="tertiary"
+                                              size="sm"
+                                              onClick={() =>
+                                                handleStartEditOption(option.id)
+                                              }
+                                              aria-label={`Edit option: ${option.text}`}
+                                            >
+                                              Edit
+                                            </s-button>
+                                            <s-button
+                                              variant="tertiary"
+                                              size="sm"
+                                              onClick={() =>
+                                                handleDeleteOption(option.id)
+                                              }
+                                              aria-label={`Delete option: ${option.text}`}
+                                            >
+                                              Delete
+                                            </s-button>
+                                          </s-stack>
+                                        </s-stack>
+                                      )}
                                     </s-box>
                                   ))}
                                 </s-stack>
@@ -1478,7 +1674,8 @@ export default function EditQuiz() {
                                   padding="base"
                                   borderWidth="base"
                                   borderRadius="base"
-                                  background="surface"
+                                  border="base"
+                                  background="subdued"
                                 >
                                   <s-stack direction="block" gap="base">
                                     <s-stack
@@ -1711,9 +1908,11 @@ export default function EditQuiz() {
                                                                   {" • "}
                                                                   <span
                                                                     className={
-                                                                      product.totalInventory === 0
+                                                                      product.totalInventory ===
+                                                                      0
                                                                         ? "inventory-out"
-                                                                        : product.totalInventory < 10
+                                                                        : product.totalInventory <
+                                                                            10
                                                                           ? "inventory-low"
                                                                           : "inventory-ok"
                                                                     }
@@ -1964,12 +2163,15 @@ export default function EditQuiz() {
           <s-box
             padding="base"
             borderRadius="base"
-            background="surface"
+            background="subdued"
             className="modal-container"
+            border="base"
             onClick={(e) => e.stopPropagation()}
           >
             <s-stack direction="block" gap="base">
-              <s-text id="confirm-modal-title" variant="heading-md">{confirmModal.title}</s-text>
+              <s-text id="confirm-modal-title" variant="heading-md">
+                {confirmModal.title}
+              </s-text>
               <s-text variant="body-md">{confirmModal.message}</s-text>
               <s-stack direction="inline" gap="base" align="end">
                 <s-button
@@ -2179,24 +2381,26 @@ Requirements:
     }
 
     // Validate and sanitize the questions (initial pass)
-    const rawQuestions: AIQuestion[] = parsedResponse.map((q: AIQuestion, idx: number) => ({
-      text: (q.text || `Question ${idx + 1}`).trim(),
-      type: q.type || "multiple_choice",
-      order: typeof q.order === "number" ? q.order : idx,
-      conditionalRules: q.conditionalRules || null,
-      options: (q.options || []).map((opt: AIQuestionOption) => ({
-        text: (opt.text || "Option").trim(),
-        matchingTags: Array.isArray(opt.matchingTags)
-          ? opt.matchingTags.filter((tag: string) => tags.includes(tag))
-          : [],
-        matchingTypes: Array.isArray(opt.matchingTypes)
-          ? opt.matchingTypes.filter((type: string) => types.includes(type))
-          : [],
-        // Preserve budget metadata for conditional logic
-        budgetMin: opt.budgetMin,
-        budgetMax: opt.budgetMax,
-      })),
-    }));
+    const rawQuestions: AIQuestion[] = parsedResponse.map(
+      (q: AIQuestion, idx: number) => ({
+        text: (q.text || `Question ${idx + 1}`).trim(),
+        type: q.type || "multiple_choice",
+        order: typeof q.order === "number" ? q.order : idx,
+        conditionalRules: q.conditionalRules || null,
+        options: (q.options || []).map((opt: AIQuestionOption) => ({
+          text: (opt.text || "Option").trim(),
+          matchingTags: Array.isArray(opt.matchingTags)
+            ? opt.matchingTags.filter((tag: string) => tags.includes(tag))
+            : [],
+          matchingTypes: Array.isArray(opt.matchingTypes)
+            ? opt.matchingTypes.filter((type: string) => types.includes(type))
+            : [],
+          // Preserve budget metadata for conditional logic
+          budgetMin: opt.budgetMin,
+          budgetMax: opt.budgetMax,
+        })),
+      }),
+    );
 
     // Deduplicate questions by normalized text and merge options when duplicates occur
     const questionMap = new Map<string, AIQuestion>();
@@ -2205,13 +2409,15 @@ Requirements:
       const key = (q.text || "").toLowerCase().replace(/\s+/g, " ").trim();
 
       // normalize options and dedupe them by text
-      const normalizedOpts: AIQuestionOption[] = (q.options || []).map((o: AIQuestionOption) => ({
-        text: (o.text || "").trim(),
-        matchingTags: Array.isArray(o.matchingTags) ? o.matchingTags : [],
-        matchingTypes: Array.isArray(o.matchingTypes) ? o.matchingTypes : [],
-        budgetMin: o.budgetMin,
-        budgetMax: o.budgetMax,
-      }));
+      const normalizedOpts: AIQuestionOption[] = (q.options || []).map(
+        (o: AIQuestionOption) => ({
+          text: (o.text || "").trim(),
+          matchingTags: Array.isArray(o.matchingTags) ? o.matchingTags : [],
+          matchingTypes: Array.isArray(o.matchingTypes) ? o.matchingTypes : [],
+          budgetMin: o.budgetMin,
+          budgetMax: o.budgetMax,
+        }),
+      );
 
       if (!questionMap.has(key)) {
         const optMap = new Map<string, AIQuestionOption>();
@@ -2223,7 +2429,10 @@ Requirements:
             const ex = optMap.get(ok);
             if (ex) {
               ex.matchingTags = Array.from(
-                new Set([...(ex.matchingTags || []), ...(o.matchingTags || [])]),
+                new Set([
+                  ...(ex.matchingTags || []),
+                  ...(o.matchingTags || []),
+                ]),
               );
               ex.matchingTypes = Array.from(
                 new Set([
@@ -2263,7 +2472,10 @@ Requirements:
             const ex = existingOptMap.get(ok);
             if (ex) {
               ex.matchingTags = Array.from(
-                new Set([...(ex.matchingTags || []), ...(o.matchingTags || [])]),
+                new Set([
+                  ...(ex.matchingTags || []),
+                  ...(o.matchingTags || []),
+                ]),
               );
               ex.matchingTypes = Array.from(
                 new Set([
@@ -2303,21 +2515,24 @@ Requirements:
     });
 
     // Convert AIQuestion to GeneratedQuestion, ensuring text is defined
-    return finalQuestions.map((q): GeneratedQuestion => ({
-      text: q.text || "Untitled Question",
-      type: q.type,
-      order: q.order,
-      conditionalRules: q.conditionalRules,
-      options: (q.options || []).map((o) => ({
-        text: o.text || "Option",
-        matchingTags: o.matchingTags,
-        matchingTypes: o.matchingTypes,
-        budgetMin: o.budgetMin,
-        budgetMax: o.budgetMax,
-      })),
-    }));
+    return finalQuestions.map(
+      (q): GeneratedQuestion => ({
+        text: q.text || "Untitled Question",
+        type: q.type,
+        order: q.order,
+        conditionalRules: q.conditionalRules,
+        options: (q.options || []).map((o) => ({
+          text: o.text || "Option",
+          matchingTags: o.matchingTags,
+          matchingTypes: o.matchingTypes,
+          budgetMin: o.budgetMin,
+          budgetMax: o.budgetMax,
+        })),
+      }),
+    );
   } catch (error: unknown) {
-    const errorMessage = error instanceof Error ? error.message : "Unknown error";
+    const errorMessage =
+      error instanceof Error ? error.message : "Unknown error";
     logger.error("OpenAI API error", error);
     throw new Error(`AI generation failed: ${errorMessage}`);
   }

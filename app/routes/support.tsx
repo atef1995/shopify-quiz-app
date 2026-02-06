@@ -7,7 +7,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Support - Product Quiz Builder</title>
+  <title>Support - QuizCraft</title>
   <style>
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
@@ -57,7 +57,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   </style>
 </head>
 <body>
-  <h1>Product Quiz Builder Support</h1>
+  <h1>QuizCraft Support</h1>
   
   <div class="contact-box">
     <h2>📧 Contact Support</h2>
@@ -83,7 +83,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     <p>1. Go to Online Store → Themes → Customize<br>
     2. Navigate to the page where you want the quiz<br>
     3. Add an App Block<br>
-    4. Select "Product Quiz Builder"<br>
+    4. Select "QuizCraft"<br>
     5. Choose your quiz from the dropdown<br>
     6. Save your changes</p>
   </div>

@@ -1,15 +1,21 @@
 /**
  * Type declarations for Shopify Polaris web components (s-* tags)
  * 
- * These components are used in Shopify embedded apps and work at runtime,
- * but official types are incomplete. This file provides proper TypeScript support.
+ * These components are used in Shopify embedded apps and work at runtime.
+ * Type definitions are kept permissive to allow all Polaris web component properties.
  * 
- * Reference: https://shopify.dev/docs/api/app-bridge-library/web-components
+ * Reference: https://shopify.dev/docs/api/app-home/using-polaris-components
  */
 
 import type * as React from "react";
 
-type BaseProps = React.DetailedHTMLProps<React.HTMLAttributes<HTMLElement>, HTMLElement>;
+// Permissive props that allow any string property for Polaris web components
+// Polaris web components accept dynamic properties, so we use a permissive type
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type BaseProps = React.DetailedHTMLProps<React.HTMLAttributes<HTMLElement>, HTMLElement> & {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  [key: string]: any;
+};
 
 declare global {
   namespace JSX {
@@ -196,6 +202,47 @@ declare global {
         children?: React.ReactNode;
       };
       's-table-cell': BaseProps & {
+        children?: React.ReactNode;
+      };
+      's-table-header-row': BaseProps & {
+        children?: React.ReactNode;
+      };
+      // Interactive components
+      's-clickable': BaseProps & {
+        href?: string;
+        onClick?: (event: React.MouseEvent) => void;
+        accessibilityLabel?: string;
+        children?: React.ReactNode;
+      };
+      's-button-group': BaseProps & {
+        variant?: string;
+        children?: React.ReactNode;
+      };
+      // Popover and choice components
+      's-popover': BaseProps & {
+        id?: string;
+        children?: React.ReactNode;
+      };
+      's-choice-list': BaseProps & {
+        label?: string;
+        name?: string;
+        children?: React.ReactNode;
+      };
+      's-choice': BaseProps & {
+        value?: string;
+        selected?: boolean;
+        onChange?: () => void;
+        children?: React.ReactNode;
+      };
+      // Image
+      's-image': BaseProps & {
+        src?: string;
+        alt?: string;
+        objectFit?: string;
+        children?: React.ReactNode;
+      };
+      // Code
+      's-code': BaseProps & {
         children?: React.ReactNode;
       };
       // Tooltip

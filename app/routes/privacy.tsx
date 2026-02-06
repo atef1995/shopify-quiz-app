@@ -7,7 +7,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Privacy Policy - Product Quiz Builder</title>
+  <title>Privacy Policy - QuizCraft</title>
   <style>
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
@@ -40,7 +40,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   <p class="last-updated">Last updated: October 24, 2025</p>
   
   <h2>1. Introduction</h2>
-  <p>Product Quiz Builder ("we", "our", or "us") is committed to protecting your privacy. This Privacy Policy explains how we collect, use, and protect information when you use our Shopify app.</p>
+  <p>QuizCraft ("we", "our", or "us") is committed to protecting your privacy. This Privacy Policy explains how we collect, use, and protect information when you use our Shopify app.</p>
   
   <h2>2. Information We Collect</h2>
   <h3>2.1 Shop Information</h3>
@@ -138,7 +138,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     <li><strong>Shopify:</strong> Platform and authentication (see <a href="https://www.shopify.com/legal/privacy">Shopify Privacy Policy</a>)</li>
   </ul>
   
-  <p><em>By using Product Quiz Builder, you agree to this Privacy Policy.</em></p>
+  <p><em>By using QuizCraft, you agree to this Privacy Policy.</em></p>
 </body>
 </html>
   `;

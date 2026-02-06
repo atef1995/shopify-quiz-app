@@ -1,31 +1,26 @@
-import { useState } from "react";
+import { useEffect } from "react";
 import type {
   ActionFunctionArgs,
   LoaderFunctionArgs,
   HeadersFunction,
 } from "react-router";
-import { redirect, Form, useNavigation, Link, useLoaderData } from "react-router";
+import { redirect, useFetcher, useLoaderData } from "react-router";
 import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import prisma from "../db.server";
-import {
-  canCreateQuiz,
-  hasFeatureAccess,
-  getQuizUsageStats,
-} from "../lib/billing.server";
+import { canCreateQuiz, getQuizUsageStats } from "../lib/billing.server";
 import { logger } from "../lib/logger.server";
 
 /**
  * Loader to prepare data for quiz creation
- * Checks if user can create more quizzes and has AI access
+ * Checks if user can create more quizzes
  */
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
 
   // Check quiz creation limits
   const quizLimits = await canCreateQuiz(session.shop);
-  const aiAccess = await hasFeatureAccess(session.shop, "ai_generation");
   const quizUsage = await getQuizUsageStats(session.shop);
 
   return {
@@ -34,8 +29,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     createWarningMessage: quizLimits.warningMessage,
     createBlockedReason: quizLimits.reason,
     quizUsage,
-    canUseAI: aiAccess.allowed,
-    aiRequiredTier: aiAccess.requiredTier,
     tier: quizLimits.tier,
     tierName: quizLimits.tierName,
   };
@@ -67,23 +60,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     const title = formData.get("title") as string;
     const description = formData.get("description") as string;
-    const useAI = formData.get("useAI") === "true";
 
-    // Check AI access if trying to use AI
-    if (useAI) {
-      const aiAccess = await hasFeatureAccess(session.shop, "ai_generation");
-      if (!aiAccess.allowed) {
-        return Response.json(
-          {
-            error: `AI quiz generation requires ${aiAccess.requiredTier} plan or higher.`,
-            upgradeRequired: true,
-          },
-          { status: 403 },
-        );
-      }
+    // Validate required fields
+    if (!title || title.trim() === "") {
+      return Response.json(
+        { error: "Quiz title is required" },
+        { status: 400 },
+      );
     }
 
-    log.info("Creating quiz", { title, useAI });
+    log.info("Creating quiz", { title, hasTitle: !!title });
 
     try {
       // Create quiz with default settings
@@ -113,51 +99,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
       log.debug("Analytics record created", { quizId: quiz.id });
 
-      // If AI generation is requested, generate questions automatically
-      if (useAI) {
-        try {
-          // Build absolute URL for API call - extract origin from request
-          const requestUrl = new URL(request.url);
-          const apiUrl = `${requestUrl.origin}/api/quiz/generate`;
-          
-          const generateResponse = await fetch(apiUrl, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/x-www-form-urlencoded",
-            },
-            body: new URLSearchParams({
-              quizId: quiz.id,
-              style: "professional",
-            }),
-          });
-
-          if (!generateResponse.ok) {
-            const errorText = await generateResponse.text();
-            log.warn("AI generation API error", { status: generateResponse.status, error: errorText, quizId: quiz.id });
-          } else {
-            const result = await generateResponse.json();
-            
-            if (!result.success) {
-              log.warn("AI generation failed", { error: result.error, quizId: quiz.id });
-            } else {
-              log.info("AI generation successful", { quizId: quiz.id, questionsGenerated: result.questionsGenerated });
-            }
-          }
-        } catch (error) {
-          log.warn("AI generation error", { quizId: quiz.id, error: String(error) });
-          // Continue to edit page even if AI generation fails
-        }
-      }
-
       log.debug("Redirecting to edit page", { quizId: quiz.id });
       return redirect(`/app/quizzes/${quiz.id}/edit`);
-      
     } catch (error) {
       log.error("Error creating quiz", error);
-      return Response.json(
-        { error: "Failed to create quiz" },
-        { status: 500 }
-      );
+      return Response.json({ error: "Failed to create quiz" }, { status: 500 });
     }
   }
 
@@ -166,13 +112,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
 export default function NewQuiz() {
   const loaderData = useLoaderData<typeof loader>();
-  const navigation = useNavigation();
+  const fetcher = useFetcher();
   const shopify = useAppBridge();
-  const isSubmitting = navigation.state === "submitting";
-  const [showAILoading, setShowAILoading] = useState(false);
-  // Track AI checkbox state for controlled component behavior
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const [_useAI, setUseAI] = useState(false);
+  const isSubmitting = fetcher.state === "submitting";
 
   const {
     canCreate,
@@ -180,12 +122,19 @@ export default function NewQuiz() {
     createWarningMessage,
     createBlockedReason,
     quizUsage,
-    canUseAI,
-    aiRequiredTier,
     tierName,
   } = loaderData;
 
-  // Show loading modal when AI generation is in progress
+  // Show error toasts from server responses
+  useEffect(() => {
+    if (fetcher.data && fetcher.state === "idle") {
+      if (fetcher.data.error) {
+        shopify.toast.show(fetcher.data.error, { isError: true });
+      }
+    }
+  }, [fetcher.data, fetcher.state, shopify]);
+
+  // Form submission handler
   const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     // Block submission if at limit
     if (!canCreate) {
@@ -197,24 +146,15 @@ export default function NewQuiz() {
     }
 
     const formData = new FormData(e.currentTarget);
-    const useAIValue = formData.get("useAI") === "true";
+    const title = formData.get("title") as string;
 
-    // Block AI usage if not allowed
-    if (useAIValue && !canUseAI) {
+    // Validate title is not empty
+    if (!title || title.trim() === "") {
       e.preventDefault();
-      shopify.toast.show(
-        `AI quiz generation requires ${aiRequiredTier} plan or higher.`,
-        { isError: true },
-      );
+      shopify.toast.show("Quiz title is required", {
+        isError: true,
+      });
       return;
-    }
-
-    if (useAIValue) {
-      setShowAILoading(true);
-      shopify.toast.show(
-        "Generating quiz with AI... This may take 10-15 seconds",
-        { duration: 4000 },
-      );
     }
   };
 
@@ -234,9 +174,9 @@ export default function NewQuiz() {
                   <strong>Quiz Limit Reached</strong>
                 </s-text>
                 <s-text variant="body-sm">{createBlockedReason}</s-text>
-                <Link to="/app/billing">
-                  <s-button variant="primary">Upgrade Plan</s-button>
-                </Link>
+                <s-button href="/app/billing" variant="primary">
+                  Upgrade Plan
+                </s-button>
               </s-stack>
             </s-banner>
           )}
@@ -245,9 +185,9 @@ export default function NewQuiz() {
             <s-banner variant="warning">
               <s-stack direction="inline" gap="base" align="center">
                 <s-text variant="body-sm">{createWarningMessage}</s-text>
-                <Link to="/app/billing">
-                  <s-button variant="tertiary">View Plans</s-button>
-                </Link>
+                <s-button href="/app/billing" variant="tertiary">
+                  View Plans
+                </s-button>
               </s-stack>
             </s-banner>
           )}
@@ -266,7 +206,7 @@ export default function NewQuiz() {
             automatically or build from scratch.
           </s-paragraph>
 
-          <Form method="post" onSubmit={handleSubmit}>
+          <fetcher.Form method="post" onSubmit={handleSubmit}>
             <input type="hidden" name="action" value="create" />
             <s-stack direction="block" gap="base">
               {/* Basic Quiz Info */}
@@ -283,68 +223,6 @@ export default function NewQuiz() {
                 placeholder="Help customers understand what this quiz is about"
               />
 
-              {/* AI Generation Toggle */}
-              <s-box
-                padding="base"
-                borderWidth="base"
-                borderRadius="base"
-                background="subdued"
-              >
-                <s-stack direction="block" gap="base">
-                  <s-stack direction="inline" gap="base" align="center">
-                    <s-icon source="magic" />
-                    <s-stack direction="block" gap="tight">
-                      <s-text variant="heading-sm">
-                        Generate Quiz with AI
-                        {!canUseAI && (
-                          <s-badge variant="attention" className="badge-margin-left">
-                            {aiRequiredTier}+ Plan
-                          </s-badge>
-                        )}
-                      </s-text>
-                      <s-text variant="body-sm" color="subdued">
-                        AI will analyze your products and create personalized
-                        quiz questions automatically. You can edit them after
-                        creation.
-                      </s-text>
-                    </s-stack>
-                  </s-stack>
-
-                  {canUseAI ? (
-                    <s-checkbox
-                      name="useAI"
-                      value="true"
-                      label="Use AI to generate quiz questions from my product catalog"
-                      onChange={(e) =>
-                        setUseAI((e.target as HTMLInputElement).checked)
-                      }
-                    />
-                  ) : (
-                    <s-banner variant="warning">
-                      <s-stack direction="inline" gap="base" align="center">
-                        <s-text variant="body-sm">
-                          AI quiz generation requires the {aiRequiredTier} plan
-                          or higher.
-                        </s-text>
-                        <Link to="/app/billing">
-                          <s-button variant="tertiary">
-                            Upgrade to {aiRequiredTier}
-                          </s-button>
-                        </Link>
-                      </s-stack>
-                    </s-banner>
-                  )}
-
-                  {canUseAI && (
-                    <s-banner variant="info">
-                      After creating the quiz, you&apos;ll be able to customize
-                      the AI-generated questions, add images, and set up
-                      conditional logic.
-                    </s-banner>
-                  )}
-                </s-stack>
-              </s-box>
-
               {/* Submit Buttons */}
               <s-stack direction="inline" gap="base">
                 <s-button
@@ -355,14 +233,12 @@ export default function NewQuiz() {
                 >
                   {canCreate ? "Create Quiz" : "Upgrade to Create"}
                 </s-button>
-                <Link to="/app/quizzes">
-                  <s-button type="button" variant="secondary">
-                    Cancel
-                  </s-button>
-                </Link>
+                <s-button href="/app/quizzes" variant="secondary">
+                  Cancel
+                </s-button>
               </s-stack>
             </s-stack>
-          </Form>
+          </fetcher.Form>
         </s-stack>
       </s-section>
 
@@ -373,7 +249,8 @@ export default function NewQuiz() {
             padding="base"
             borderWidth="base"
             borderRadius="base"
-            background="surface"
+            border="base"
+            background="subdued"
           >
             <s-stack direction="block" gap="tight">
               <s-text variant="heading-sm">Optimal Length</s-text>
@@ -388,7 +265,8 @@ export default function NewQuiz() {
             padding="base"
             borderWidth="base"
             borderRadius="base"
-            background="surface"
+            border="base"
+            background="subdued"
           >
             <s-stack direction="block" gap="tight">
               <s-text variant="heading-sm">Question Types</s-text>
@@ -403,7 +281,8 @@ export default function NewQuiz() {
             padding="base"
             borderWidth="base"
             borderRadius="base"
-            background="surface"
+            border="base"
+            background="subdued"
           >
             <s-stack direction="block" gap="tight">
               <s-text variant="heading-sm">Email Capture</s-text>
@@ -415,37 +294,6 @@ export default function NewQuiz() {
           </s-box>
         </s-stack>
       </s-section>
-
-      {/* AI Generation Loading Modal */}
-      {showAILoading && (
-        <div
-          className="modal-backdrop"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="ai-loading-title"
-        >
-          <s-box
-            padding="large"
-            borderRadius="base"
-            background="surface"
-            className="modal-container"
-          >
-            <s-stack direction="block" gap="base" align="center">
-              <s-spinner size="large" />
-              <s-text variant="heading-lg">Generating Your Quiz with AI</s-text>
-              <s-text variant="body-md" alignment="center">
-                Our AI is analyzing your product catalog and creating personalized quiz questions.
-                This typically takes 10-15 seconds.
-              </s-text>
-              <s-banner variant="info">
-                <s-text variant="body-sm">
-                  💡 Tip: You&apos;ll be able to customize all AI-generated questions after creation.
-                </s-text>
-              </s-banner>
-            </s-stack>
-          </s-box>
-        </div>
-      )}
     </s-page>
   );
 }

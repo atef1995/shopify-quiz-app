@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import type { LoaderFunctionArgs, ActionFunctionArgs, HeadersFunction } from "react-router";
-import { useLoaderData, useFetcher, useNavigate } from "react-router";
+import { useLoaderData, useFetcher } from "react-router";
 import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { useAppBridge } from "@shopify/app-bridge-react";
@@ -23,6 +23,23 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     });
 
     return { success: true, message: "Quiz deleted successfully!" };
+  }
+
+  if (actionType === "bulkDelete") {
+    // Delete multiple quizzes at once
+    const quizIds = formData.get("quizIds") as string;
+    const idsArray = quizIds.split(",").filter(id => id.trim());
+
+    // Delete all selected quizzes
+    await prisma.quiz.deleteMany({
+      where: {
+        id: { in: idsArray },
+        shop: session.shop, // Security: only delete quizzes owned by this shop
+      },
+    });
+
+    const count = idsArray.length;
+    return { success: true, message: `${count} quiz${count > 1 ? 'es' : ''} deleted successfully!` };
   }
 
   if (actionType === "toggleStatus") {
@@ -107,10 +124,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 };
 export default function QuizzesIndex() {
   const { quizzes, usage, quizUsage } = useLoaderData<typeof loader>();
-  const navigate = useNavigate();
   const fetcher = useFetcher();
   const shopify = useAppBridge();
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [sortBy, setSortBy] = useState<"title" | "questions" | "created" | "status">("title");
+  const [sortOrder, setSortOrder] = useState<"asc" | "desc">("asc");
+  const [selectedQuizzes, setSelectedQuizzes] = useState<Set<string>>(new Set());
   const [confirmModal, setConfirmModal] = useState<{
     isOpen: boolean;
     quizId: string;
@@ -120,6 +140,26 @@ export default function QuizzesIndex() {
     quizId: "",
     quizTitle: "",
   });
+  const [bulkDeleteModal, setBulkDeleteModal] = useState<{
+    isOpen: boolean;
+    count: number;
+  }>({
+    isOpen: false,
+    count: 0,
+  });
+
+  // Show toast notifications when fetcher completes
+  useEffect(() => {
+    if (fetcher.data && fetcher.state === "idle") {
+      if (fetcher.data.success) {
+        shopify.toast.show(fetcher.data.message);
+      } else {
+        shopify.toast.show(fetcher.data.message || "Action failed", {
+          isError: true,
+        });
+      }
+    }
+  }, [fetcher.data, fetcher.state, shopify]);
 
   // Completion usage
   const isNearLimit = usage.percentUsed >= 80;
@@ -129,6 +169,31 @@ export default function QuizzesIndex() {
   const isNearQuizLimit = quizUsage.percentUsed >= 80;
   const isAtQuizLimit =
     !quizUsage.isUnlimited && quizUsage.currentCount >= quizUsage.limit;
+
+  // Filter and sort quizzes
+  const filteredAndSortedQuizzes = quizzes
+    .filter((quiz) =>
+      quiz.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      quiz.description?.toLowerCase().includes(searchQuery.toLowerCase())
+    )
+    .sort((a, b) => {
+      let comparison = 0;
+      switch (sortBy) {
+        case "title":
+          comparison = a.title.localeCompare(b.title);
+          break;
+        case "questions":
+          comparison = a.questionCount - b.questionCount;
+          break;
+        case "created":
+          comparison = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+          break;
+        case "status":
+          comparison = a.status.localeCompare(b.status);
+          break;
+      }
+      return sortOrder === "asc" ? comparison : -comparison;
+    });
 
   const copyQuizId = async (quizId: string) => {
     try {
@@ -147,6 +212,8 @@ export default function QuizzesIndex() {
     }
   };
 
+  // TODO: Re-enable when status toggle buttons are added back to UI
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const toggleQuizStatus = (quizId: string, currentStatus: string) => {
     const newStatus = currentStatus === "active" ? "draft" : "active";
     const formData = new FormData();
@@ -172,18 +239,56 @@ export default function QuizzesIndex() {
     setConfirmModal({ isOpen: false, quizId: "", quizTitle: "" });
   };
 
+  const handleBulkDelete = () => {
+    if (selectedQuizzes.size === 0) return;
+    
+    setBulkDeleteModal({
+      isOpen: true,
+      count: selectedQuizzes.size,
+    });
+  };
+
+  const confirmBulkDelete = () => {
+    const formData = new FormData();
+    formData.append("action", "bulkDelete");
+    formData.append("quizIds", Array.from(selectedQuizzes).join(","));
+    fetcher.submit(formData, { method: "POST" });
+    setBulkDeleteModal({ isOpen: false, count: 0 });
+    setSelectedQuizzes(new Set()); // Clear selection after deletion
+  };
+
+  const toggleQuizSelection = (quizId: string) => {
+    const newSelection = new Set(selectedQuizzes);
+    if (newSelection.has(quizId)) {
+      newSelection.delete(quizId);
+    } else {
+      newSelection.add(quizId);
+    }
+    setSelectedQuizzes(newSelection);
+  };
+
+  const toggleAllQuizzes = () => {
+    if (selectedQuizzes.size === filteredAndSortedQuizzes.length) {
+      setSelectedQuizzes(new Set());
+    } else {
+      setSelectedQuizzes(new Set(filteredAndSortedQuizzes.map(q => q.id)));
+    }
+  };
+
+  const formatDate = (dateString: string) => {
+    const date = new Date(dateString);
+    const now = new Date();
+    const diffInDays = Math.floor((now.getTime() - date.getTime()) / (1000 * 60 * 60 * 24));
+    
+    if (diffInDays === 0) return "Today";
+    if (diffInDays === 1) return "Yesterday";
+    if (diffInDays < 7) return `${diffInDays} days ago`;
+    if (diffInDays < 30) return `${Math.floor(diffInDays / 7)} weeks ago`;
+    return date.toLocaleDateString();
+  };
   return (
-    <s-page heading="Product Quiz Builder" max-width="full">
+    <s-page heading="QuizCraft" max-width="full">
       {/* Primary Action - Create Quiz */}
-      {!isAtQuizLimit && (
-        <s-button
-          slot="primary-action"
-          variant="primary"
-          onClick={() => navigate("/app/quizzes/new")}
-        >
-          Create Quiz
-        </s-button>
-      )}
 
       {/* Quiz Count Usage Banner */}
       {isAtQuizLimit && (
@@ -196,7 +301,7 @@ export default function QuizzesIndex() {
               </s-text>
               <s-button
                 variant="primary"
-                onClick={() => navigate("/app/billing")}
+                href="/app/billing"
               >
                 Upgrade to Create More
               </s-button>
@@ -211,7 +316,7 @@ export default function QuizzesIndex() {
             <s-text variant="body-sm">
               You&apos;ve used {quizUsage.currentCount} of {quizUsage.limit} quizzes
               ({quizUsage.percentUsed}%).{" "}
-              <s-link onClick={() => navigate("/app/billing")}>
+              <s-link href="/app/billing">
                 Upgrade your plan
               </s-link>{" "}
               to create more quizzes.
@@ -226,7 +331,7 @@ export default function QuizzesIndex() {
           <s-banner variant="critical">
             <s-text variant="body-sm">
               You&apos;ve reached your monthly limit of {usage.limit} completions.{" "}
-              <s-link onClick={() => navigate("/app/billing")}>
+              <s-link href="/app/billing">
                 Upgrade your plan
               </s-link>{" "}
               to continue collecting quiz responses.
@@ -241,7 +346,7 @@ export default function QuizzesIndex() {
             <s-text variant="body-sm">
               You&apos;ve used {usage.currentUsage} of {usage.limit} monthly
               completions ({usage.percentUsed}%).{" "}
-              <s-link onClick={() => navigate("/app/billing")}>
+              <s-link href="/app/billing">
                 View billing
               </s-link>{" "}
               to upgrade before reaching your limit.
@@ -258,7 +363,7 @@ export default function QuizzesIndex() {
           >
             <s-stack direction="block" gap="base" align="center">
               <s-button
-                onClick={() => navigate("/app/quizzes/new")}
+                href="/app/quizzes/new"
                 variant="primary"
                 size="large"
               >
@@ -266,7 +371,7 @@ export default function QuizzesIndex() {
               </s-button>
 
               {/* Benefits Section */}
-              <s-box padding="large" borderRadius="base">
+              <s-box padding="large" borderRadius="base" border="base" background="subdued">
                 <s-stack direction="block" gap="base">
                   <s-text variant="heading-md" alignment="center">
                     Why Use Product Quizzes?
@@ -335,41 +440,124 @@ export default function QuizzesIndex() {
           </s-empty-state>
         </s-section>
       ) : (
-        <s-section>
-          <s-stack direction="block" gap="base">
-            <s-banner>
-              <s-text>
-                <strong>Quick Tip:</strong> To display a quiz on your
-                storefront, copy its Quiz ID using the Copy button below, then
-                paste it into the Product Quiz block settings in your theme
-                editor (Online Store → Themes → Customize → Add Block → Product
-                Quiz).
-              </s-text>
-            </s-banner>
-
-            <s-paragraph>
-              Manage your product recommendation quizzes. Track performance and
-              optimize for better conversions.
-            </s-paragraph>
-
-            <s-data-table>
-              <s-table>
-                <s-table-head>
-                  <s-table-row>
-                    <s-table-header>Quiz Name</s-table-header>
-                    <s-table-header>Status</s-table-header>
-                    <s-table-header>Quiz ID</s-table-header>
-                    <s-table-header>Questions</s-table-header>
-                    <s-table-header>Completions</s-table-header>
-                    <s-table-header>Conversion Rate</s-table-header>
-                    <s-table-header>Revenue</s-table-header>
-                    <s-table-header>Actions</s-table-header>
-                  </s-table-row>
-                </s-table-head>
-                <s-table-body>
-                  {quizzes.map((quiz) => (
-                    <s-table-row key={quiz.id}>
-                      <s-table-cell>
+        <>
+          {/* Desktop Table View */}
+          <s-section padding="none" accessibilityLabel="Quizzes table section">
+            <s-table>
+              <s-grid slot="filters" gap="small-200" gridTemplateColumns="1fr auto">
+                <s-text-field
+                  label="Search quizzes"
+                  labelAccessibilityVisibility="exclusive"
+                  icon="search"
+                  placeholder="Search all quizzes"
+                  value={searchQuery}
+                  onInput={(e: React.FormEvent<HTMLElement>) => {
+                    const target = e.target as HTMLInputElement;
+                    setSearchQuery(target.value);
+                  }}
+                />
+                <s-button
+                  icon="sort"
+                  variant="secondary"
+                  accessibilityLabel="Sort"
+                  interestFor="sort-tooltip"
+                  commandFor="sort-actions"
+                />
+                <s-tooltip id="sort-tooltip">
+                  <s-text>Sort</s-text>
+                </s-tooltip>
+                <s-popover id="sort-actions">
+                  <s-stack gap="none">
+                    <s-box padding="small">
+                      <s-choice-list label="Sort by" name="Sort by">
+                        <s-choice 
+                          value="title" 
+                          selected={sortBy === "title"}
+                          onChange={() => setSortBy("title")}
+                        >
+                          Quiz name
+                        </s-choice>
+                        <s-choice 
+                          value="questions"
+                          selected={sortBy === "questions"}
+                          onChange={() => setSortBy("questions")}
+                        >
+                          Questions
+                        </s-choice>
+                        <s-choice 
+                          value="created"
+                          selected={sortBy === "created"}
+                          onChange={() => setSortBy("created")}
+                        >
+                          Created
+                        </s-choice>
+                        <s-choice 
+                          value="status"
+                          selected={sortBy === "status"}
+                          onChange={() => setSortBy("status")}
+                        >
+                          Status
+                        </s-choice>
+                      </s-choice-list>
+                    </s-box>
+                    <s-divider />
+                    <s-box padding="small">
+                      <s-choice-list label="Order by" name="Order by">
+                        <s-choice 
+                          value="asc" 
+                          selected={sortOrder === "asc"}
+                          onChange={() => setSortOrder("asc")}
+                        >
+                          A-Z
+                        </s-choice>
+                        <s-choice 
+                          value="desc"
+                          selected={sortOrder === "desc"}
+                          onChange={() => setSortOrder("desc")}
+                        >
+                          Z-A
+                        </s-choice>
+                      </s-choice-list>
+                    </s-box>
+                  </s-stack>
+                </s-popover>
+              </s-grid>
+              <s-table-header-row>
+                <s-table-header listSlot="primary">
+                  <s-stack direction="inline" gap="small" alignItems="center">
+                    <s-checkbox
+                      checked={selectedQuizzes.size === filteredAndSortedQuizzes.length && filteredAndSortedQuizzes.length > 0}
+                      onChange={toggleAllQuizzes}
+                      accessibilityLabel="Select all quizzes"
+                    />
+                  </s-stack>
+                </s-table-header>
+                <s-table-header>Quiz</s-table-header>
+                <s-table-header format="numeric">Questions</s-table-header>
+                <s-table-header format="numeric">Completions</s-table-header>
+                <s-table-header>Created</s-table-header>
+                <s-table-header listSlot="secondary">Status</s-table-header>
+              </s-table-header-row>
+              <s-table-body>
+                {filteredAndSortedQuizzes.map((quiz) => (
+                  <s-table-row 
+                    key={quiz.id} 
+                    clickDelegate={`quiz-${quiz.id}-checkbox`}
+                  >
+                    <s-table-cell listSlot="primary">
+                      <s-stack direction="inline" gap="small" alignItems="center">
+                        <s-checkbox 
+                          id={`quiz-${quiz.id}-checkbox`}
+                          checked={selectedQuizzes.has(quiz.id)}
+                          onChange={() => toggleQuizSelection(quiz.id)}
+                        />
+                      </s-stack>
+                    </s-table-cell>
+                    <s-table-cell>
+                      <s-clickable
+                        href={`/app/quizzes/${quiz.id}/edit`}
+                        accessibilityLabel={`Edit ${quiz.title}`}
+                      >
                         <s-stack direction="block" gap="tight">
                           <s-text variant="heading-sm">{quiz.title}</s-text>
                           {quiz.description && (
@@ -378,219 +566,99 @@ export default function QuizzesIndex() {
                             </s-text>
                           )}
                         </s-stack>
-                      </s-table-cell>
-                      <s-table-cell>
-                        <s-stack direction="inline" gap="tight" align="center">
-                          <s-badge
-                            variant={
-                              quiz.status === "active"
-                                ? "success"
-                                : quiz.status === "draft"
-                                  ? "warning"
-                                  : "default"
-                            }
-                          >
-                            {quiz.status === "active" ? "Active" : "Draft"}
-                          </s-badge>
-                          <s-button
-                            variant="tertiary"
-                            size="sm"
-                            onClick={() =>
-                              toggleQuizStatus(quiz.id, quiz.status)
-                            }
-                            title={
-                              quiz.status === "active"
-                                ? "Set to draft"
-                                : "Activate quiz"
-                            }
-                            aria-label={
-                              quiz.status === "active"
-                                ? `Deactivate quiz ${quiz.title}`
-                                : `Activate quiz ${quiz.title}`
-                            }
-                          >
-                            {quiz.status === "active"
-                              ? "Deactivate"
-                              : "Activate"}
-                          </s-button>
-                        </s-stack>
-                      </s-table-cell>
-                      <s-table-cell>
-                        <s-stack direction="inline" gap="tight" align="center">
-                          <s-text
-                            className="text-mono text-truncate"
-                            title={quiz.id}
-                          >
-                            {quiz.id}
-                          </s-text>
-                          <s-button
-                            onClick={() => copyQuizId(quiz.id)}
-                            variant="tertiary"
-                            size="sm"
-                            title="Copy Quiz ID for theme block"
-                            aria-label={`Copy Quiz ID for ${quiz.title}`}
-                          >
-                            {copiedId === quiz.id ? "Copied!" : "Copy"}
-                          </s-button>
-                        </s-stack>
-                      </s-table-cell>
-                      <s-table-cell>{quiz.questionCount}</s-table-cell>
-                      <s-table-cell>
-                        {quiz.completions} / {quiz.views} views
-                      </s-table-cell>
-                      <s-table-cell>{quiz.completionRate}%</s-table-cell>
-                      <s-table-cell>${quiz.revenue.toFixed(2)}</s-table-cell>
-                      <s-table-cell>
-                        <s-stack direction="inline" gap="tight">
-                          <s-button
-                            onClick={() =>
-                              navigate(`/app/quizzes/${quiz.id}/edit`)
-                            }
-                            variant="tertiary"
-                            size="sm"
-                            aria-label={`Edit quiz ${quiz.title}`}
-                          >
-                            Edit
-                          </s-button>
-                          <s-button
-                            onClick={() =>
-                              navigate(`/app/quizzes/${quiz.id}/analytics`)
-                            }
-                            variant="tertiary"
-                            size="sm"
-                            aria-label={`View analytics for ${quiz.title}`}
-                          >
-                            Analytics
-                          </s-button>
-                          <s-button
-                            onClick={() =>
-                              handleDeleteQuiz(quiz.id, quiz.title)
-                            }
-                            variant="tertiary"
-                            size="sm"
-                            aria-label={`Delete quiz ${quiz.title}`}
-                          >
-                            Delete
-                          </s-button>
-                        </s-stack>
-                      </s-table-cell>
-                    </s-table-row>
-                  ))}
-                </s-table-body>
-              </s-table>
-            </s-data-table>
-                  <s-button
-                onClick={() => navigate("/app/quizzes/new")}
-                variant="primary"
-                size="large"
-              >
-                Create Quiz
-              </s-button>
-            {/* Mobile-friendly card layout (hidden on desktop) */}
-            <div className="mobile-quiz-list mobile-only">
-              <s-stack direction="block" gap="base">
-                {quizzes.map((quiz) => (
-                  <s-box
-                    key={quiz.id}
-                    padding="base"
-                    borderWidth="base"
-                    borderRadius="base"
-                    background="surface"
-                    onClick={() => navigate(`/app/quizzes/${quiz.id}/edit`)}
-                    className="selectable-item"
-                  >
-                    <s-stack direction="block" gap="base">
-                      {/* Title and Status */}
+                      </s-clickable>
+                    </s-table-cell>
+                    <s-table-cell format="numeric">{quiz.questionCount}</s-table-cell>
+                    <s-table-cell format="numeric">
                       <s-stack direction="block" gap="tight">
-                        <s-text variant="heading-md">{quiz.title}</s-text>
-                        {quiz.description && (
-                          <s-text variant="body-sm" color="subdued">
-                            {quiz.description}
-                          </s-text>
-                        )}
-                        <s-badge
-                          variant={
-                            quiz.status === "active"
-                              ? "success"
-                              : quiz.status === "draft"
-                                ? "warning"
-                                : "default"
-                          }
+                        <s-text>{quiz.completions}</s-text>
+                        <s-text variant="body-sm" color="subdued">
+                          {quiz.completionRate}% rate
+                        </s-text>
+                      </s-stack>
+                    </s-table-cell>
+                    <s-table-cell>{formatDate(quiz.createdAt)}</s-table-cell>
+                    <s-table-cell listSlot="secondary">
+                      <s-stack direction="block" gap="small">
+                        <s-badge 
+                          color="base" 
+                          tone={quiz.status === "active" ? "success" : "neutral"}
                         >
                           {quiz.status === "active" ? "Active" : "Draft"}
                         </s-badge>
+                        <s-stack direction="inline" gap="small">
+                          <s-button
+                            href={`/app/quizzes/${quiz.id}/edit`}
+                            variant="secondary"
+                            size="micro"
+                            accessibilityLabel={`Edit ${quiz.title}`}
+                            icon="edit"
+                          />
+                          <s-button-group variant="segmented">
+                            <s-button
+                              href={`/app/quizzes/${quiz.id}/analytics`}
+                              variant="tertiary"
+                              size="micro"
+                              accessibilityLabel={`Analytics for ${quiz.title}`}
+                              icon="analytics"
+                            />
+                          <s-button
+                            onClick={() => copyQuizId(quiz.id)}
+                            variant="tertiary"
+                            size="micro"
+                            accessibilityLabel={`Copy ID for ${quiz.title}`}
+                            icon="duplicate"
+                            title={copiedId === quiz.id ? "Copied!" : "Copy ID"}
+                          />
+                          <s-button
+                            onClick={() => handleDeleteQuiz(quiz.id, quiz.title)}
+                            variant="tertiary"
+                            size="micro"
+                            accessibilityLabel={`Delete ${quiz.title}`}
+                            icon="delete"
+                            tone="critical"
+                          />
+                        </s-button-group>
+                        </s-stack>
                       </s-stack>
-
-                      {/* Stats */}
-                      <s-stack direction="block" gap="tight">
-                        <s-text variant="body-sm">
-                          {quiz.questionCount} questions • {quiz.completions}{" "}
-                          completions • {quiz.completionRate}% conversion
-                        </s-text>
-                        <s-text variant="body-sm">
-                          ${quiz.revenue.toFixed(2)} revenue
-                        </s-text>
-                      </s-stack>
-
-                      {/* Action Buttons */}
-                      <s-stack direction="block" gap="tight">
-                        <s-button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            navigate(`/app/quizzes/${quiz.id}/edit`);
-                          }}
-                          variant="primary"
-                        >
-                          Edit Quiz
-                        </s-button>
-                        <s-button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            navigate(`/app/quizzes/${quiz.id}/analytics`);
-                          }}
-                          variant="secondary"
-                        >
-                          View Analytics
-                        </s-button>
-                        <s-button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            toggleQuizStatus(quiz.id, quiz.status);
-                          }}
-                          variant="tertiary"
-                        >
-                          {quiz.status === "active"
-                            ? "Set to Draft"
-                            : "Activate"}
-                        </s-button>
-                        <s-button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            copyQuizId(quiz.id);
-                          }}
-                          variant="tertiary"
-                        >
-                          {copiedId === quiz.id
-                            ? "Copied Quiz ID"
-                            : "Copy Quiz ID"}
-                        </s-button>
-                        <s-button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDeleteQuiz(quiz.id, quiz.title);
-                          }}
-                          variant="tertiary"
-                        >
-                          Delete Quiz
-                        </s-button>
-                      </s-stack>
-                    </s-stack>
-                  </s-box>
+                    </s-table-cell>
+                  </s-table-row>
                 ))}
-              </s-stack>
-            </div>
-          </s-stack>
-        </s-section>
+              </s-table-body>
+            </s-table>
+          </s-section>
+
+          <s-section>
+            <s-stack direction="inline" gap="base" align="center">
+              <s-button
+                href="/app/quizzes/new"
+                variant="primary"
+              >
+                Create New Quiz
+              </s-button>
+              {selectedQuizzes.size > 0 && (
+                <>
+                  <s-button
+                    onClick={handleBulkDelete}
+                    variant="primary"
+                    tone="critical"
+                  >
+                    Delete {selectedQuizzes.size} Selected
+                  </s-button>
+                  <s-button
+                    onClick={() => setSelectedQuizzes(new Set())}
+                    variant="secondary"
+                  >
+                    Cancel Selection
+                  </s-button>
+                  <s-text variant="body-sm" color="subdued">
+                    {selectedQuizzes.size} quiz{selectedQuizzes.size > 1 ? 'es' : ''} selected
+                  </s-text>
+                </>
+              )}
+            </s-stack>
+          </s-section>
+        </>
       )}
 
       <s-section slot="aside" heading="Tips for Success">
@@ -612,7 +680,7 @@ export default function QuizzesIndex() {
 
       {/* Delete Confirmation Modal */}
       {confirmModal.isOpen && (
-        // eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events -- Modal backdrop dismiss pattern
+        // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/click-events-have-key-events -- Modal backdrop dismiss pattern
         <div
           className="modal-backdrop"
           role="dialog"
@@ -625,7 +693,8 @@ export default function QuizzesIndex() {
           <s-box
             padding="large"
             borderRadius="base"
-            background="surface"
+            background="subdued"
+            border="base"
             className="modal-container"
             onClick={(e: React.MouseEvent) => e.stopPropagation()}
           >
@@ -656,6 +725,50 @@ export default function QuizzesIndex() {
                   tone="critical"
                 >
                   Delete Quiz
+                </s-button>
+              </s-stack>
+            </s-stack>
+          </s-box>
+        </div>
+      )}
+
+      {/* Bulk Delete Confirmation Modal */}
+      {bulkDeleteModal.isOpen && (
+        // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/click-events-have-key-events -- Modal backdrop dismiss pattern
+        <div
+          className="modal-backdrop"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="bulk-delete-modal-title"
+          onClick={() => setBulkDeleteModal({ isOpen: false, count: 0 })}
+        >
+          <s-box
+            padding="large"
+            borderRadius="base"
+            border="base"
+            background="subdued"
+            onClick={(e: React.MouseEvent) => e.stopPropagation()}
+          >
+            <s-stack direction="block" gap="base">
+              <s-text id="bulk-delete-modal-title" variant="heading-md">Delete {bulkDeleteModal.count} Quiz{bulkDeleteModal.count > 1 ? 'es' : ''}?</s-text>
+              <s-text variant="body-md">
+                Are you sure you want to delete {bulkDeleteModal.count} quiz{bulkDeleteModal.count > 1 ? 'es' : ''}? This action cannot be undone and will delete all
+                questions, options, results, and analytics data associated with
+                {bulkDeleteModal.count > 1 ? ' these quizzes' : ' this quiz'}.
+              </s-text>
+              <s-stack direction="inline" gap="base">
+                <s-button
+                  onClick={() => setBulkDeleteModal({ isOpen: false, count: 0 })}
+                  variant="secondary"
+                >
+                  Cancel
+                </s-button>
+                <s-button
+                  onClick={confirmBulkDelete}
+                  variant="primary"
+                  tone="critical"
+                >
+                  Delete {bulkDeleteModal.count} Quiz{bulkDeleteModal.count > 1 ? 'es' : ''}
                 </s-button>
               </s-stack>
             </s-stack>

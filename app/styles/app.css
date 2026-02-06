@@ -1,51 +1,151 @@
 /**
  * Global styles for QuizCraft App
- * Following Shopify best practices - no inline styles
+ * Following Shopify Polaris design system best practices
+ * Using design tokens and semantic values from Shopify Polaris
  */
 
 /* ===== Layout Utilities ===== */
 
-/* Modal/Overlay backdrop */
+/* Modal/Overlay backdrop - Polaris elevation level 4 */
 .modal-backdrop {
   position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-color: rgba(0, 0, 0, 0.5);
-  z-index: 100;
+  inset: 0; /* Modern CSS shorthand for top/right/bottom/left: 0 */
+  background-color: var(--p-color-bg-backdrop, rgba(0, 0, 0, 0.71)); /* Polaris backdrop color */
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  z-index: var(--p-z-index-11, 514); /* Polaris z-index for modals */
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: var(--p-space-500, 1.25rem); /* Polaris spacing token */
 }
 
-/* Modal container */
+/* Modal container - Polaris surface styling */
 .modal-container {
-  max-width: 500px;
+  max-width: 31.25rem; /* 500px - Polaris prefers rem units */
   width: 100%;
   max-height: 90vh;
   overflow-y: auto;
+  background-color: var(--p-color-bg-surface, #ffffff) !important;
+  border-radius: var(--p-border-radius-300, 0.75rem); /* Polaris border radius */
+  box-shadow: var(
+    --p-shadow-600,
+    0px 26px 80px 0px rgba(0, 0, 0, 0.1),
+    0px 0px 1px 0px rgba(0, 0, 0, 0.15)
+  ); /* Polaris modal shadow */
+  color: var(--p-color-text, #202223);
+}
+
+/* ===== Mobile-first Responsive Design ===== */
+/* Mobile-first responsive design for better usability */
+@media (max-width: 768px) {
+  /* Reduce padding to maximize content area */
+  s-page {
+    --p-space-400: 0.5rem !important;
+    --p-space-500: 0.75rem !important;
+  }
+  s-section {
+    --p-space-400: 0.5rem !important;
+    padding: 0.5rem !important;
+  }
+  s-box {
+    padding: 0.5rem !important;
+  }
+
+  /* Force inline stacks to become vertical on mobile for better layout */
+  s-stack[direction="inline"] {
+    flex-direction: column !important;
+    align-items: stretch !important;
+  }
+
+  /* Make primary action buttons easier to tap on mobile */
+  s-button[slot="primary-action"],
+  s-button[variant="primary"] {
+    min-width: 100% !important;
+    justify-content: center !important;
+  }
+
+  /* Ensure other buttons are still accessible */
+  s-button {
+    min-height: 44px !important; /* Apple's minimum touch target */
+    padding: 0.5rem 1rem !important;
+  }
+
+  /* Ensure text doesn't overflow */
+  s-text {
+    word-wrap: break-word !important;
+    overflow-wrap: break-word !important;
+  }
+
+  /* Make form fields full width */
+  s-text-field {
+    width: 100% !important;
+  }
+
+  /* Hide data tables on mobile - they're unusable */
+  s-data-table {
+    display: none !important;
+  }
+
+  /* Show mobile card layout instead */
+  .mobile-quiz-list {
+    display: block !important;
+  }
+}
+
+/* Portrait screens - maximize horizontal space */
+@media (orientation: portrait) {
+  s-page {
+    --p-space-400: 0.5rem !important;
+    --p-space-500: 0.75rem !important;
+  }
+}
+
+/* Very small screens (phones) - ultra compact */
+@media (max-width: 480px) {
+  s-page {
+    --p-space-400: 0.25rem !important;
+    --p-space-500: 0.5rem !important;
+  }
+  s-section {
+    padding: 0.25rem !important;
+  }
+  s-box {
+    padding: 0.25rem !important;
+  }
+
+  /* Smaller text on very small screens */
+  s-text {
+    font-size: 0.9em !important;
+  }
+}
+
+/* Desktop - hide mobile layout, show table */
+@media (min-width: 769px) {
+  .mobile-quiz-list {
+    display: none !important;
+  }
 }
 
 /* ===== Progress Bar ===== */
 .progress-bar-container {
   width: 100%;
-  height: 8px;
-  background-color: #e4e5e7;
-  border-radius: 4px;
+  height: var(--p-space-200, 0.5rem);
+  background-color: var(--p-color-bg-surface-secondary, #f1f2f4);
+  border-radius: var(--p-border-radius-100, 0.25rem);
   overflow: hidden;
 }
 
 .progress-bar-fill {
   height: 100%;
-  background-color: #008060;
-  border-radius: 4px;
+  background-color: var(--p-color-bg-fill-success, #008060); /* Polaris success color */
+  border-radius: var(--p-border-radius-100, 0.25rem);
   transition: width 0.3s ease;
 }
 
 /* ===== Badge Utilities ===== */
 .badge-margin-left {
-  margin-left: 8px;
+  margin-left: var(--p-space-200, 0.5rem);
 }
 
 /* ===== Code/Pre Blocks ===== */
@@ -56,11 +156,11 @@
 /* ===== Product Image Grid ===== */
 .product-image-container {
   position: relative;
-  width: 48px;
-  height: 48px;
-  border-radius: 8px;
+  width: 3rem; /* 48px in rem */
+  height: 3rem;
+  border-radius: var(--p-border-radius-200, 0.5rem);
   overflow: hidden;
-  background-color: #f6f6f7;
+  background-color: var(--p-color-bg-surface-secondary, #f1f2f4);
   flex-shrink: 0;
 }
 
@@ -76,43 +176,43 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background-color: #f6f6f7;
+  background-color: var(--p-color-bg-surface-secondary, #f1f2f4);
 }
 
 /* Product card in selector */
 .product-card {
-  padding: 12px;
-  border: 1px solid #e1e3e5;
-  border-radius: 8px;
+  padding: var(--p-space-300, 0.75rem);
+  border: var(--p-border-width-025, 0.0625rem) solid var(--p-color-border, #c9cccf);
+  border-radius: var(--p-border-radius-200, 0.5rem);
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: all var(--p-motion-duration-150, 150ms) var(--p-motion-ease, ease);
 }
 
 .product-card:hover {
-  border-color: #008060;
-  background-color: #f4faf8;
+  border-color: var(--p-color-border-interactive-hover, #005e47);
+  background-color: var(--p-color-bg-surface-success-hover, #f4faf8);
 }
 
 .product-card.selected {
-  border-color: #008060;
-  background-color: #f4faf8;
+  border-color: var(--p-color-border-interactive, #008060);
+  background-color: var(--p-color-bg-surface-success, #f4faf8);
 }
 
 /* Product grid layout */
 .product-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(12.5rem, 1fr));
+  gap: var(--p-space-300, 0.75rem);
 }
 
 /* ===== Selection States ===== */
 .selectable-item {
   cursor: pointer;
-  transition: background-color 0.15s ease;
+  transition: background-color var(--p-motion-duration-150, 150ms) var(--p-motion-ease, ease);
 }
 
 .selectable-item:hover {
-  background-color: rgba(0, 0, 0, 0.02);
+  background-color: var(--p-color-bg-surface-hover, rgba(241, 242, 244, 0.5));
 }
 
 /* ===== Text Utilities ===== */
@@ -128,31 +228,31 @@
 
 /* Monospace text for IDs */
 .text-mono {
-  font-family: "SF Mono", Monaco, "Courier New", monospace;
-  font-size: 12px;
+  font-family: var(--p-font-family-mono, ui-monospace, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace);
+  font-size: var(--p-font-size-300, 0.75rem);
 }
 
 /* ===== Stock Badge ===== */
 .stock-badge {
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-size: 12px;
-  font-weight: 500;
+  padding: var(--p-space-050, 0.125rem) var(--p-space-200, 0.5rem);
+  border-radius: var(--p-border-radius-100, 0.25rem);
+  font-size: var(--p-font-size-300, 0.75rem);
+  font-weight: var(--p-font-weight-semibold, 600);
 }
 
 .stock-badge.in-stock {
-  background-color: #aee9d1;
-  color: #0d5e38;
+  background-color: var(--p-color-bg-fill-success-secondary, #aee9d1);
+  color: var(--p-color-text-success, #0a5533);
 }
 
 .stock-badge.low-stock {
-  background-color: #ffe5b4;
-  color: #8c5a00;
+  background-color: var(--p-color-bg-fill-warning-secondary, #ffe5b4);
+  color: var(--p-color-text-warning, #8a6116);
 }
 
 .stock-badge.out-of-stock {
-  background-color: #ffd6d6;
-  color: #c00;
+  background-color: var(--p-color-bg-fill-critical-secondary, #ffd6d6);
+  color: var(--p-color-text-critical, #d72c0d);
 }
 
 /* ===== Mobile Responsive ===== */
@@ -181,37 +281,34 @@
 /* ===== Loading States ===== */
 .loading-overlay {
   position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-color: rgba(255, 255, 255, 0.8);
+  inset: 0;
+  background-color: var(--p-color-bg-surface, rgba(255, 255, 255, 0.8));
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 10;
+  z-index: var(--p-z-index-2, 400);
 }
 
 /* ===== Empty States ===== */
 .empty-state {
-  padding: 48px 24px;
+  padding: var(--p-space-1200, 3rem) var(--p-space-600, 1.5rem);
   text-align: center;
 }
 
 .empty-state-icon {
-  font-size: 48px;
-  margin-bottom: 16px;
+  font-size: 3rem;
+  margin-bottom: var(--p-space-400, 1rem);
   opacity: 0.5;
 }
 
 /* ===== Card Variants ===== */
 .card-highlighted {
-  border: 2px solid #008060;
-  background-color: #f4faf8;
+  border: var(--p-border-width-050, 0.125rem) solid var(--p-color-border-interactive, #008060);
+  background-color: var(--p-color-bg-surface-success, #f4faf8);
 }
 
 .card-white-bg {
-  background-color: white;
+  background-color: var(--p-color-bg-surface, #ffffff);
 }
 
 /* ===== Flex Utilities ===== */
@@ -225,15 +322,15 @@
 
 /* ===== Spacing Utilities ===== */
 .gap-tight {
-  gap: 4px;
+  gap: var(--p-space-100, 0.25rem);
 }
 
 .gap-base {
-  gap: 16px;
+  gap: var(--p-space-400, 1rem);
 }
 
 .gap-loose {
-  gap: 24px;
+  gap: var(--p-space-600, 1.5rem);
 }
 
 /* ===== Hidden but accessible ===== */
@@ -260,92 +357,92 @@
 }
 
 .skeleton {
-  background-color: #e3e3e3;
-  border-radius: 4px;
-  animation: pulse 1.5s ease-in-out infinite;
+  background-color: var(--p-color-bg-surface-secondary, #e3e4e5);
+  border-radius: var(--p-border-radius-100, 0.25rem);
+  animation: pulse var(--p-motion-duration-1000, 1000ms) var(--p-motion-ease, ease-in-out) infinite;
 }
 
 .skeleton-image {
-  width: 40px;
-  height: 40px;
+  width: 2.5rem; /* 40px */
+  height: 2.5rem;
 }
 
 .skeleton-title {
   width: 60%;
-  height: 16px;
+  height: 1rem;
 }
 
 .skeleton-subtitle {
   width: 40%;
-  height: 14px;
+  height: 0.875rem;
 }
 
 /* ===== Checkbox Custom ===== */
 .custom-checkbox {
-  width: 20px;
-  height: 20px;
-  border-radius: 4px;
-  border: 2px solid #c9cccf;
-  background-color: white;
+  width: var(--p-space-500, 1.25rem);
+  height: var(--p-space-500, 1.25rem);
+  border-radius: var(--p-border-radius-100, 0.25rem);
+  border: var(--p-border-width-050, 0.125rem) solid var(--p-color-border, #c9cccf);
+  background-color: var(--p-color-bg-surface, #ffffff);
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  transition: all 0.2s ease;
+  transition: all var(--p-motion-duration-200, 200ms) var(--p-motion-ease, ease);
 }
 
 .custom-checkbox.checked {
-  border-color: #008060;
-  background-color: #008060;
+  border-color: var(--p-color-border-interactive, #008060);
+  background-color: var(--p-color-bg-fill-interactive, #008060);
 }
 
 /* ===== Product Card in Selector ===== */
 .product-selector-card {
   cursor: pointer;
-  border: 1px solid #c9cccf;
-  transition: all 0.2s ease;
+  border: var(--p-border-width-025, 0.0625rem) solid var(--p-color-border, #c9cccf);
+  transition: all var(--p-motion-duration-200, 200ms) var(--p-motion-ease, ease);
   position: relative;
 }
 
 .product-selector-card:hover {
-  border-color: #008060;
+  border-color: var(--p-color-border-interactive-hover, #005e47);
 }
 
 .product-selector-card.selected {
-  border: 2px solid #008060;
+  border: var(--p-border-width-050, 0.125rem) solid var(--p-color-border-interactive, #008060);
 }
 
 /* ===== Product Image Small ===== */
 .product-image-sm {
-  width: 40px;
-  height: 40px;
+  width: 2.5rem; /* 40px */
+  height: 2.5rem;
   object-fit: cover;
-  border-radius: 4px;
+  border-radius: var(--p-border-radius-100, 0.25rem);
 }
 
 /* ===== Scrollable Container ===== */
 .scrollable-list {
-  max-height: 300px;
+  max-height: 18.75rem; /* 300px */
   overflow-y: auto;
 }
 
 /* ===== Success Box ===== */
 .success-highlight {
-  background-color: #e0f5ef;
-  border-color: #008060;
+  background-color: var(--p-color-bg-surface-success, #e0f5ef);
+  border-color: var(--p-color-border-success, #008060);
 }
 
 /* ===== Inventory Status Colors ===== */
 .inventory-out {
-  color: #bf0711;
+  color: var(--p-color-text-critical, #d72c0d);
 }
 
 .inventory-low {
-  color: #b98900;
+  color: var(--p-color-text-warning, #8a6116);
 }
 
 .inventory-ok {
-  color: #008060;
+  color: var(--p-color-text-success, #0a5533);
 }
 
 /* ===== Question Header ===== */
@@ -356,5 +453,5 @@
 
 /* ===== Font Weight ===== */
 .font-medium {
-  font-weight: 500;
+  font-weight: var(--p-font-weight-medium, 500);
 }

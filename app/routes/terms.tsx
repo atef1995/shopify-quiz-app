@@ -8,7 +8,7 @@ export const loader = async (_args: LoaderFunctionArgs) => {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Terms of Service - Product Quiz Builder</title>
+  <title>Terms of Service - QuizCraft</title>
   <style>
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
@@ -47,15 +47,15 @@ export const loader = async (_args: LoaderFunctionArgs) => {
   <p class="last-updated">Last updated: January 14, 2026</p>
   
   <div class="important">
-    <strong>Important:</strong> By installing or using Product Quiz Builder, you agree to these Terms of Service. If you do not agree, please uninstall the app immediately.
+    <strong>Important:</strong> By installing or using QuizCraft, you agree to these Terms of Service. If you do not agree, please uninstall the app immediately.
   </div>
   
   <h2>1. Acceptance of Terms</h2>
-  <p>These Terms of Service ("Terms") govern your use of Product Quiz Builder ("the App", "we", "our", or "us"), a Shopify application that enables merchants to create interactive product recommendation quizzes.</p>
+  <p>These Terms of Service ("Terms") govern your use of QuizCraft ("the App", "we", "our", or "us"), a Shopify application that enables merchants to create interactive product recommendation quizzes.</p>
   <p>By installing, accessing, or using the App, you ("Merchant", "you", or "your") agree to be bound by these Terms and our <a href="/privacy">Privacy Policy</a>.</p>
   
   <h2>2. Description of Service</h2>
-  <p>Product Quiz Builder provides:</p>
+  <p>QuizCraft provides:</p>
   <ul>
     <li>Interactive quiz creation tools for product recommendations</li>
     <li>AI-powered quiz generation (on eligible plans)</li>
@@ -147,7 +147,7 @@ export const loader = async (_args: LoaderFunctionArgs) => {
   </ul>
   
   <h2>10. Indemnification</h2>
-  <p>You agree to indemnify and hold harmless Product Quiz Builder, its owners, employees, and affiliates from any claims, damages, losses, or expenses (including legal fees) arising from:</p>
+  <p>You agree to indemnify and hold harmless QuizCraft, its owners, employees, and affiliates from any claims, damages, losses, or expenses (including legal fees) arising from:</p>
   <ul>
     <li>Your use of the App</li>
     <li>Your violation of these Terms</li>
@@ -205,7 +205,7 @@ export const loader = async (_args: LoaderFunctionArgs) => {
     <li><strong>Support:</strong> <a href="/support">Support Page</a></li>
   </ul>
   
-  <p><em>By installing and using Product Quiz Builder, you acknowledge that you have read, understood, and agree to these Terms of Service.</em></p>
+  <p><em>By installing and using QuizCraft, you acknowledge that you have read, understood, and agree to these Terms of Service.</em></p>
 </body>
 </html>
   `;
